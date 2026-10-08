@@ -1,0 +1,16 @@
+{
+  "name": "Kassenbuch",
+  "short_name": "Kassenbuch",
+  "description": "Einnahmen, Ausgaben, Lohn und MWST für deine Beratung in der Schweiz, mit eigener KI, verschlüsselt auf deinem Computer.",
+  "lang": "de-CH",
+  "start_url": "./#uebersicht",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef2f0",
+  "theme_color": "#2c4a8f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
