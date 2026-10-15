@@ -27,7 +27,7 @@ const state = {
   view: "uebersicht",
   bereich: prefs.bereich || "geschaeft",
   period: { mode: PERIOD_SIZE[prefs.mode] ? prefs.mode : "monat", year: now.getFullYear(), idx: 0 },
-  filter: "alle", q: "",
+  filter: "alle", q: "", sort: prefs.sort === "neu" ? "neu" : "auszug",
   queue: [],
   notice: "",
   editing: null, editingRec: null,
@@ -465,6 +465,20 @@ function docHtml(it, head) {
     </div></div>`;
 }
 
+// Movements already booked (from an earlier import) whose date or order differs from this statement.
+function misaligned(it) {
+  return it.rows.map((r, i) => ({ r, i, t: r.dup && r.dupId && state.data.tx[r.dupId] }))
+    .filter(({ r, i, t }) => t && (t.datum !== r.datum || (String(t.quelle || "").startsWith("Kontoauszug") && t.reihe !== i)));
+}
+
+function alignBooked(it) {
+  const list = misaligned(it);
+  for (const { r, i, t } of list) { t.datum = r.datum; if (String(t.quelle || "").startsWith("Kontoauszug")) { t.reihe = i; t.quelle = `Kontoauszug ${it.name}`; } }
+  save();
+  toast(`${plural(list.length, "Buchung", "Buchungen")} an den Kontoauszug angeglichen.`);
+  renderQueue();
+}
+
 function statementHtml(it, head) {
   const open = it.rows.filter((r) => !r.booked), sel = open.filter((r) => r.checked).length, dups = open.filter((r) => r.dup).length;
   const k = it.konto || {};
@@ -487,6 +501,7 @@ function statementHtml(it, head) {
     ${meta ? `<p class="small muted">${meta}</p>` : ""}
     ${it.hinweis ? `<ul class="warnings"><li>${esc(it.hinweis)}</li></ul>` : ""}
     <p class="small muted">${plural(it.rows.length, "Bewegung", "Bewegungen")}${dups ? ` · ${dups} sehen schon gebucht aus und sind abgewählt` : ""}. Die MWST steht nicht im Kontoauszug und wird mit 0 % gebucht. Für die Vorsteuer den Geschäftsbeleg einlesen.</p>
+    ${misaligned(it).length ? `<div class="alert info"><span>${plural(misaligned(it).length, "gebuchte Bewegung weicht", "gebuchte Bewegungen weichen")} beim Datum oder in der Reihenfolge von diesem Auszug ab.</span><button class="btn ghost sm" data-act="q-align" data-q="${it.id}">An Auszug angleichen</button></div>` : ""}
     <div class="imp">${rows}</div>
     <div class="actions">
       <button class="btn" data-act="q-book-rows" data-q="${it.id}" ${sel && !it.busy ? "" : "disabled"}>${plural(sel, "Bewegung", "Bewegungen")} buchen</button>
@@ -561,6 +576,7 @@ async function queueClick(act, b) {
     open.forEach((r) => { r.checked = !all; }); renderQueue();
   } else if (act === "q-book") bookDoc(it);
   else if (act === "q-book-rows") bookRows(it);
+  else if (act === "q-align") alignBooked(it);
 }
 
 async function archive(it) {
@@ -600,6 +616,7 @@ async function bookRows(it) {
   const fileId = await archive(it);
   let booked = 0, paid = 0;
   for (const r of sel) {
+    const reihe = it.rows.indexOf(r);
     const inv = r.matchId && state.data.tx[r.matchId];
     if (inv) { inv.status = "bezahlt"; inv.bezahltAm = r.datum; paid++; }
     else {
@@ -607,6 +624,7 @@ async function bookRows(it) {
         typ: r.typ, bereich: r.bereich, datum: r.datum, betragCent: r.betragCent, ustSatz: 0, kategorie: r.kategorie || defaultKat(r.typ, r.bereich),
         partner: r.partner, notiz: r.text.slice(0, 80), status: "bezahlt", erstellt: new Date().toISOString(), quelle: `Kontoauszug ${it.name}`, belegFile: fileId,
       });
+      t.reihe = reihe; // position in the statement: keeps bookings of the same day in its order
       t.ustSatz = 0;
       state.data.tx[uid()] = t;
       train(state.data.learn, { ...t, text: r.text });
@@ -626,6 +644,14 @@ async function bookRows(it) {
 // =====================================================================
 // Buchungen
 // =====================================================================
+// Oldest first, like a bank statement: by date, then by the position in the statement it came
+// from, then by the time it was entered.
+function byStatementOrder(a, b) {
+  return a.datum.localeCompare(b.datum)
+    || (a.quelle === b.quelle && a.reihe != null && b.reihe != null ? a.reihe - b.reihe : 0)
+    || String(a.erstellt).localeCompare(String(b.erstellt));
+}
+
 function renderBookings() {
   const r = range();
   const all = visibleTx();
@@ -637,7 +663,8 @@ function renderBookings() {
     if (state.filter === "offen" && t.status !== "offen") return false;
     if (q && ![t.partner, t.kategorie, t.beleg, t.notiz, t.quelle].join(" ").toLowerCase().includes(q)) return false;
     return true;
-  }).sort((a, b) => b.datum.localeCompare(a.datum) || String(b.erstellt).localeCompare(String(a.erstellt)));
+  }).sort(byStatementOrder);
+  if (state.sort === "neu") list.reverse();
   const hasFiles = list.some((t) => t.belegFile);
   const filters = { alle: "Alle", einnahme: "Einnahmen", ausgabe: "Ausgaben", offen: "Offen" };
   $("view").innerHTML = `
@@ -646,6 +673,7 @@ function renderBookings() {
       <div class="filters">
         <input type="search" id="search" placeholder="Suchen nach Partner, Kategorie, Beleg, Notiz" value="${esc(state.q)}" aria-label="Buchungen durchsuchen">
         <div class="seg" role="group" aria-label="Filter">${Object.entries(filters).map(([k, v]) => `<button type="button" data-act="filter" data-v="${k}" aria-pressed="${state.filter === k}">${v}</button>`).join("")}</div>
+        <div class="seg" role="group" aria-label="Reihenfolge">${Object.entries({ auszug: "Wie Kontoauszug", neu: "Neueste zuerst" }).map(([k, v]) => `<button type="button" data-act="sort" data-v="${k}" aria-pressed="${state.sort === k}">${v}</button>`).join("")}</div>
       </div>
       <div class="actions">
         <button class="btn sm" data-act="new-entry">Neue Buchung</button>
@@ -658,6 +686,7 @@ function renderBookings() {
   $("search").addEventListener("input", debounce((e) => { state.q = e.target.value; renderBookings(); const s = $("search"); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 200));
   setHandlers((act, b) => {
     if (act === "filter") { state.filter = b.dataset.v; renderBookings(); }
+    else if (act === "sort") { state.sort = prefs.sort = b.dataset.v; savePrefs(); renderBookings(); }
     else if (act === "edit") openEntry(b.dataset.id);
     else if (act === "export-csv") exportCsv(list, r);
     else if (act === "export-zip") exportZip(list, r, b);

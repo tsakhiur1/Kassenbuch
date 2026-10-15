@@ -1,6 +1,6 @@
 // Offline support: the whole app (including the OCR model) is cached on first visit,
 // so it starts and works without internet. Bump VERSION with every release.
-const VERSION = "kassenbuch-v6";
+const VERSION = "kassenbuch-v7";
 const FILES = [
   "./", "index.html", "app.css", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png",
   "js/main.js", "js/boot-check.js", "js/vault.js", "js/util.js", "js/categories.js", "js/learn.js", "js/parse.js", "js/extract.js", "js/process.js", "js/recurring.js",

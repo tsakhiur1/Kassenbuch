@@ -78,7 +78,8 @@ function fromDoc(doc, ctx, { name, file }) {
   return { ...fields, name, file, preview: doc.preview };
 }
 
-// Same direction and amount at most 3 days apart: most likely already booked.
+// Same direction and amount at most 5 days apart: most likely already booked
+// (card purchases are often booked with the purchase date, a few days before the statement date).
 // A movement matching an open invoice (from a customer or to a supplier) is its payment:
 // it marks the invoice paid instead of booking the amount twice.
 export function markDupes(rows, data) {
@@ -89,9 +90,10 @@ export function markDupes(rows, data) {
   // of which one is already booked, leave the second one selected
   for (const r of rows) {
     const twin = existing
-      .filter((t) => !used.has(t.id) && t.typ === r.typ && t.betragCent === r.betragCent && t.status !== "offen" && Math.abs(daysBetween(t.datum, r.datum)) <= 3)
+      .filter((t) => !used.has(t.id) && t.typ === r.typ && t.betragCent === r.betragCent && t.status !== "offen" && Math.abs(daysBetween(t.datum, r.datum)) <= 5)
       .sort((a, b) => Math.abs(daysBetween(a.datum, r.datum)) - Math.abs(daysBetween(b.datum, r.datum)))[0];
     r.dup = !!twin;
+    r.dupId = twin ? twin.id : null;
     if (twin) used.add(twin.id);
     r.matchId = null;
     if (!r.dup) {
