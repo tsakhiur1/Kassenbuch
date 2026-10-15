@@ -198,6 +198,16 @@ function controlsHtml(withPeriod = true) {
     + `<div class="stepper"><button class="icon-btn" type="button" data-act="prev" aria-label="Vorheriger Zeitraum">‹</button><span>${esc(range().label)}</span><button class="icon-btn" type="button" data-act="next" aria-label="Nächster Zeitraum">›</button></div>` : ""}</div>`;
 }
 
+// When the chosen period and area show nothing although there are bookings, say where they are.
+function elsewhereHtml() {
+  const all = allTx();
+  if (!all.length) return "";
+  const dates = all.map((t) => t.datum).sort();
+  const [first, last] = [dates[0], dates[dates.length - 1]];
+  const span = first.slice(0, 7) === last.slice(0, 7) ? `${MONTHS_LONG[+first.slice(5, 7) - 1]} ${first.slice(0, 4)}` : `${dmy(first)} bis ${dmy(last)}`;
+  return `<div class="alert info"><span>Hier ist nichts zu sehen, aber deine <strong>${plural(all.length, "Buchung", "Buchungen")}</strong> sind gespeichert (${esc(span)}).</span><button class="btn sm" data-act="jump-latest">Buchungen anzeigen</button></div>`;
+}
+
 // ---------- routing ----------
 const VIEWS = { uebersicht: renderOverview, erfassen: renderCapture, buchungen: renderBookings, sparen: renderSavings, wiederkehrend: renderRecurring, einstellungen: renderSettings };
 function route(v) {
@@ -227,6 +237,14 @@ $("view").addEventListener("click", (e) => {
     if (p.idx >= count) { p.idx = 0; p.year++; }
     render();
   } else if (act === "goto") route(b.dataset.v);
+  else if (act === "jump-latest") {
+    // show the year of the latest booking, business and private together
+    const latest = allTx().reduce((a, t) => (t.datum > a ? t.datum : a), "");
+    if (!latest) return;
+    state.bereich = prefs.bereich = "alle"; p.mode = prefs.mode = "jahr"; p.year = +latest.slice(0, 4); p.idx = 0; savePrefs();
+    if (state.view === "buchungen") state.filter = "alle";
+    render();
+  }
   else if (act === "new-entry") openEntry(null);
   else pageClick(act, b, e);
 });
@@ -286,6 +304,7 @@ function renderOverview() {
       <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}${moved > 0 ? ` · davon ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}${invested > 0 ? ` · ${fmt0(invested)} angelegt` : invested < 0 ? ` · ${fmt0(-invested)} aus Anlagen` : ""}</span></div>
       <div class="kpi"><span class="label">${k4.label}</span><span class="val ${k4.cls}">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
+    ${!empty && !inP.length ? elsewhereHtml() : ""}
     ${goalStrip()}
     ${open.length ? `<div class="alert"><span><strong>${plural(open.length, "offene Rechnung", "offene Rechnungen")}</strong> über ${fmt(open.reduce((a, t) => a + t.betragCent, 0))}</span>${late.length ? `<span>${late.length} davon über ${ZAHLUNGSFRIST} Tage alt</span>` : ""}<button class="btn ghost sm" data-act="show-open">Anzeigen</button></div>` : ""}
     ${needBackup ? `<div class="alert"><span><strong>Sicherung empfohlen:</strong> ${lastBackup ? `letzte Sicherung am ${dmy(lastBackup)}` : "noch keine Sicherung erstellt"}.</span><button class="btn ghost sm" data-act="goto" data-v="einstellungen">Jetzt sichern</button></div>` : ""}
@@ -715,7 +734,7 @@ function renderBookings() {
         <button class="btn ghost sm" data-act="export-zip" ${hasFiles ? "" : "disabled"} title="${hasFiles ? "" : "In dieser Auswahl gibt es keine gespeicherten Belege"}">Belege als ZIP</button>
         <span class="small muted">${plural(list.length, "Buchung", "Buchungen")} ${state.filter === "offen" ? "aus allen Zeiträumen" : "in " + esc(r.label)}</span>
       </div>
-      <div class="list" id="list">${list.length ? list.map(rowHtml).join("") : `<div class="empty">${Object.keys(state.data.tx).length ? `Keine passenden Buchungen in ${esc(r.label)}.` : `<b>Noch keine Buchungen</b><span>Lies unter „Erfassen“ ein Dokument ein oder erfasse eine Buchung von Hand.</span><button class="btn sm" data-act="goto" data-v="erfassen">Zum Erfassen</button>`}</div>`}</div>
+      <div class="list" id="list">${list.length ? list.map(rowHtml).join("") : `<div class="empty">${Object.keys(state.data.tx).length ? (state.q ? `Keine passenden Buchungen in ${esc(r.label)}.` : `<span>Keine Buchungen in ${esc(r.label)}${state.bereich === "alle" ? "" : ` im Bereich ${esc(BEREICH_NAME[state.bereich])}`}.</span>${elsewhereHtml()}`) : `<b>Noch keine Buchungen</b><span>Lies unter „Erfassen“ ein Dokument ein oder erfasse eine Buchung von Hand.</span><button class="btn sm" data-act="goto" data-v="erfassen">Zum Erfassen</button>`}</div>`}</div>
     </section>`;
   $("search").addEventListener("input", debounce((e) => { state.q = e.target.value; renderBookings(); const s = $("search"); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 200));
   setHandlers((act, b) => {
@@ -1154,7 +1173,11 @@ addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEven
 
 function renderSettings() {
   const s = state.data.settings;
-  const budgets = Object.entries(s.budgets || {});
+  const budgets = Object.entries(s.budgets || {}).sort((a, b) => a[0].localeCompare(b[0], "de"));
+  // average spending per category over the last months, as a guide for the budget
+  const avgOf = new Map(analyze(allTx(), todayIso(), goalOpts()).cats.map((c) => [c.kategorie, c.avg]));
+  const budgetCats = [...new Set([...KAT.privat.ausgabe, ...KAT.geschaeft.ausgabe, ...allTx().filter((t) => t.typ === "ausgabe").map((t) => t.kategorie)])]
+    .filter((k) => k && !(s.budgets || {})[k]).sort((a, b) => a.localeCompare(b, "de"));
   const installed = matchMedia("(display-mode: standalone)").matches;
   $("view").innerHTML = `
     <div class="pagehead"><h1>Einstellungen</h1></div>
@@ -1176,11 +1199,17 @@ function renderSettings() {
         </div>
       </section>
       <section class="panel"><h2>Monatsbudgets</h2>
-        <p class="small muted">Die Übersicht zeigt, wie viel von jedem Budget schon gebraucht ist.</p>
-        ${budgets.length ? budgets.map(([k, v]) => `<div class="actions" style="justify-content:space-between"><span>${esc(k)}</span><span><span class="num">${fmt(v)}</span> / Monat <button class="btn quiet sm" data-act="budget-del" data-k="${esc(k)}">Entfernen</button></span></div>`).join("") : ""}
-        <div class="set-grid"><div class="field"><label for="s-bkat">Kategorie</label><input type="text" id="s-bkat" list="${datalistId(state.bereich === "privat" ? "privat" : "geschaeft", "ausgabe")}"></div>
+        <p class="small muted">Die Übersicht zeigt, wie viel von jedem Budget schon gebraucht ist. Betrag direkt ändern, er wird sofort gespeichert.</p>
+        ${budgets.length ? `<div class="budget-list">${budgets.map(([k, v], i) => `<div class="budget-row">
+            <label for="s-b-${i}">${esc(k)}${avgOf.get(k) ? `<small>bisher Ø ${fmt0(avgOf.get(k))} / Monat</small>` : ""}</label>
+            <span class="budget-input"><input type="text" inputmode="decimal" id="s-b-${i}" class="b-edit" data-k="${esc(k)}" value="${amountText(v)}" aria-label="Budget ${esc(k)} pro Monat in CHF"><small>/ Monat</small></span>
+            <button class="btn quiet sm" data-act="budget-del" data-k="${esc(k)}" aria-label="Budget ${esc(k)} entfernen">Entfernen</button>
+          </div>`).join("")}</div>` : `<p class="small">Noch keine Budgets. Lege eines an, oder lass dir unter <a href="#sparen">Sparziel</a> passende Budgets vorschlagen.</p>`}
+        <h3>Neues Budget</h3>
+        <datalist id="dl-budget">${budgetCats.map((k) => `<option value="${esc(k)}">`).join("")}</datalist>
+        <div class="set-grid"><div class="field"><label for="s-bkat">Kategorie</label><input type="text" id="s-bkat" list="dl-budget" placeholder="z. B. Restaurant & Ausgang"><span class="hint" id="s-bkat-hint"></span></div>
           <div class="field"><label for="s-bbetrag">Betrag pro Monat (CHF)</label><input type="text" id="s-bbetrag" inputmode="decimal"></div></div>
-        <div class="actions"><button class="btn ghost sm" data-act="budget-add">Budget setzen</button></div>
+        <div class="actions"><button class="btn ghost sm" data-act="budget-add">Budget hinzufügen</button>${budgets.length ? `<button class="btn quiet sm" data-act="budget-clear">Alle Budgets entfernen</button>` : ""}</div>
       </section>
       <section class="panel"><h2>Eingebaute KI</h2>
         <p class="small">Die KI liest Dokumente auf diesem Computer und hat sich bisher <b>${plural(learnedCount(state.data.learn), "Partner", "Partner")}</b> mit ihrer Kategorie gemerkt. Jede Buchung, die du bestätigst oder korrigierst, macht sie genauer.</p>
@@ -1221,8 +1250,14 @@ function renderSettings() {
     if (act === "budget-add") {
       const k = $("s-bkat").value.trim(), v = parseBetrag($("s-bbetrag").value);
       if (!k || !v || v <= 0) return toast("Bitte Kategorie und Betrag angeben.");
-      s.budgets = { ...(s.budgets || {}), [k]: v }; save(); renderSettings();
+      const had = (s.budgets || {})[k] != null;
+      s.budgets = { ...(s.budgets || {}), [k]: Math.abs(v) }; save(); renderSettings();
+      toast(had ? `Budget ${k} geändert.` : `Budget ${k} hinzugefügt.`);
     } else if (act === "budget-del") { delete s.budgets[b.dataset.k]; save(); renderSettings(); }
+    else if (act === "budget-clear") {
+      if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Wirklich alle entfernen?"; return; }
+      s.budgets = {}; save(); renderSettings(); toast("Alle Budgets entfernt.");
+    }
     else if (act === "learn-reset") {
       if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Wirklich alles Gelernte vergessen?"; return; }
       state.data.learn = vault.emptyData().learn; save(); toast("Die KI hat das Gelernte vergessen."); renderSettings();
@@ -1242,7 +1277,17 @@ function renderSettings() {
     }
   }, (e) => {
     const id = e.target.id;
-    if (id === "s-firma") { s.firma = e.target.value.trim(); save(); }
+    if (e.target.classList.contains("b-edit")) {
+      const k = e.target.dataset.k, v = parseBetrag(e.target.value);
+      if (!v || v <= 0) { toast("Bitte einen Betrag eingeben. Zum Löschen „Entfernen“ wählen."); e.target.value = amountText(s.budgets[k]); return; }
+      s.budgets = { ...s.budgets, [k]: Math.abs(v) }; save();
+      e.target.value = amountText(Math.abs(v)); toast(`Budget ${k}: ${fmt0(Math.abs(v))} pro Monat.`);
+    } else if (id === "s-bkat") {
+      // show what was spent so far and suggest it as the amount
+      const avg = avgOf.get(e.target.value.trim()), cur = (s.budgets || {})[e.target.value.trim()];
+      $("s-bkat-hint").textContent = cur ? `Hat schon ein Budget (${fmt0(cur)}): der neue Betrag ersetzt es.` : avg ? `Bisher Ø ${fmt0(avg)} pro Monat.` : "";
+      if (avg && !$("s-bbetrag").value) $("s-bbetrag").placeholder = amountText(Math.floor(avg / 1000) * 1000);
+    } else if (id === "s-firma") { s.firma = e.target.value.trim(); save(); }
     else if (id === "s-eigene") { s.eigeneKonten = e.target.value.split(/\n+/).map((x) => x.trim()).filter(Boolean); save(); }
     else if (id === "s-ibans") { s.ibans = e.target.value.split(/[\n,;]+/).map((x) => x.replace(/\s/g, "").toUpperCase()).filter(Boolean); save(); }
     else if (id === "s-mwst") { s.mwst = e.target.value; save(); renderSettings(); }

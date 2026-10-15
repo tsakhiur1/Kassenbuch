@@ -289,3 +289,13 @@ table.plan .r { text-align: right; }
 table.plan tr.sum td { border-bottom: 0; font-weight: 600; }
 .tips { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 .tips > div { display: grid; gap: 4px; align-content: start; border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; background: var(--bg); }
+
+/* ---------- budgets in the settings ---------- */
+.budget-list { display: grid; }
+.budget-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--rule); }
+.budget-row:first-child { border-top: 0; }
+.budget-row label { display: grid; gap: 2px; min-width: 0; }
+.budget-row label small, .budget-input small { color: var(--muted); font-size: 0.8rem; }
+.budget-input { display: inline-flex; align-items: center; gap: 6px; }
+.budget-input input { width: 8.5em; text-align: right; font-family: var(--num); }
+@media (max-width: 520px) { .budget-row { grid-template-columns: minmax(0, 1fr) auto; } .budget-row label { grid-column: 1 / -1; } }
