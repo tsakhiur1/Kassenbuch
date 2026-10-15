@@ -85,8 +85,14 @@ export function markDupes(rows, data) {
   const existing = Object.entries(data.tx).map(([id, t]) => ({ id, ...t }));
   const openInvoices = existing.filter((t) => t.status === "offen");
   const used = new Set();
+  // each booking can explain only one movement: two equal payments on the same day,
+  // of which one is already booked, leave the second one selected
   for (const r of rows) {
-    r.dup = existing.some((t) => t.typ === r.typ && t.betragCent === r.betragCent && Math.abs(daysBetween(t.datum, r.datum)) <= 3 && t.status !== "offen");
+    const twin = existing
+      .filter((t) => !used.has(t.id) && t.typ === r.typ && t.betragCent === r.betragCent && t.status !== "offen" && Math.abs(daysBetween(t.datum, r.datum)) <= 3)
+      .sort((a, b) => Math.abs(daysBetween(a.datum, r.datum)) - Math.abs(daysBetween(b.datum, r.datum)))[0];
+    r.dup = !!twin;
+    if (twin) used.add(twin.id);
     r.matchId = null;
     if (!r.dup) {
       const inv = openInvoices.find((t) => !used.has(t.id) && t.typ === r.typ && t.betragCent === r.betragCent && t.datum <= r.datum);
