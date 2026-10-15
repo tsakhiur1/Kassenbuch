@@ -31,6 +31,12 @@ export function merchantKey(text) {
 
 // [pattern, category, area, direction]
 const RULES = [
+  [/\b(sparkonto|sparplan|sparen|anlagekonto|wertschriften|depot|selma|true ?wealth|yuh|descartes|inyova)\b/i, "Sparen & Anlegen", "privat", "ausgabe"],
+  [/\b(netflix|spotify|disney\+?|dazn|youtube premium|apple\.com\/bill|apple music|amazon prime|prime video|audible|teleboy|blue\s?tv|sky show)\b/i, "Abos & Streaming", "privat", "ausgabe"],
+  [/\b(bargeldbezug|bargeld|postomat|bancomat|geldautomat|atm)\b/i, "Bargeld", "privat", "ausgabe"],
+  [/\b(restaurant|ristorante|pizzeria|trattoria|caf[eé]|kaffee|bistro|bar|pub|kebab|sushi|mcdonald'?s?|burger king|starbucks|subway|kfc|take ?away|uber ?eats|just ?eat|eat\.ch|smood|dieci|tibits|hiltl|vapiano)\b/i, "Restaurant & Ausgang", "privat", "ausgabe"],
+  [/\b(ikea|jumbo|hornbach|obi|bauhaus|do it|micasa|pfister|qualipet|fressnapf)\b/i, "Haushalt", "privat", "ausgabe"],
+  [/\b(amazon|temu|shein|aliexpress|wish|zalando lounge|wish\.com)\b/i, "Online-Shopping", "privat", "ausgabe"],
   [/\b(migros|coop|denner|lidl|aldi|volg|spar|landi|globus|manor food|alnatura)\b/i, "Lebensmittel", "privat", "ausgabe"],
   [/\b(css|helsana|sanitas|swica|visana|kpt|groupe mutuel|concordia|assura|atupri|ökk|oekk|sympany|egk|agrisano|krankenkasse|krankenversicherung)\b/i, "Krankenkasse", "privat", "ausgabe"],
   [/\b(steuerverwaltung|steueramt|staatssteuer|gemeindesteuer|bundessteuer|steuerrechnung)\b/i, "Steuern", "privat", "ausgabe"],

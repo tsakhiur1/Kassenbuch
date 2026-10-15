@@ -7,6 +7,7 @@ import { train, learnedCount } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
+import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm } from "./savings.js";
 
 const $ = (id) => document.getElementById(id);
 const PERIOD_SIZE = { monat: 1, quartal: 3, semester: 6, jahr: 12 };
@@ -30,7 +31,7 @@ const state = {
   filter: "alle", q: "", sort: prefs.sort === "neu" ? "neu" : "auszug",
   queue: [],
   notice: "",
-  editing: null, editingRec: null,
+  editing: null, editingRec: null, editGoal: false,
 };
 state.period.idx = Math.floor(now.getMonth() / PERIOD_SIZE[state.period.mode]);
 
@@ -198,7 +199,7 @@ function controlsHtml(withPeriod = true) {
 }
 
 // ---------- routing ----------
-const VIEWS = { uebersicht: renderOverview, erfassen: renderCapture, buchungen: renderBookings, wiederkehrend: renderRecurring, einstellungen: renderSettings };
+const VIEWS = { uebersicht: renderOverview, erfassen: renderCapture, buchungen: renderBookings, sparen: renderSavings, wiederkehrend: renderRecurring, einstellungen: renderSettings };
 function route(v) {
   if (!VIEWS[v]) v = "uebersicht";
   state.view = v;
@@ -283,6 +284,7 @@ function renderOverview() {
       <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}</span></div>
       <div class="kpi"><span class="label">${k4.label}</span><span class="val ${k4.cls}">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
+    ${goalStrip()}
     ${open.length ? `<div class="alert"><span><strong>${plural(open.length, "offene Rechnung", "offene Rechnungen")}</strong> über ${fmt(open.reduce((a, t) => a + t.betragCent, 0))}</span>${late.length ? `<span>${late.length} davon über ${ZAHLUNGSFRIST} Tage alt</span>` : ""}<button class="btn ghost sm" data-act="show-open">Anzeigen</button></div>` : ""}
     ${needBackup ? `<div class="alert"><span><strong>Sicherung empfohlen:</strong> ${lastBackup ? `letzte Sicherung am ${dmy(lastBackup)}` : "noch keine Sicherung erstellt"}.</span><button class="btn ghost sm" data-act="goto" data-v="einstellungen">Jetzt sichern</button></div>` : ""}
     <div class="grid2">
@@ -296,6 +298,18 @@ function renderOverview() {
     if (act === "show-open") { state.filter = "offen"; route("buchungen"); }
   });
   state.notice = "";
+}
+
+// a one-line reminder of the savings goal on the overview
+function goalStrip() {
+  const g = state.data.settings.sparziel;
+  if (!g) return Object.keys(state.data.tx).length ? `<div class="alert info"><span><strong>Tipp:</strong> Lege ein Sparziel fest. Die App zeigt dir dann, wie viel du jeden Monat noch ausgeben kannst.</span><button class="btn ghost sm" data-act="goto" data-v="sparen">Sparziel festlegen</button></div>` : "";
+  const st = goalStatus(g, allTx(), todayIso()), line = goalLine(g, st);
+  return `<button type="button" class="goal-strip" data-act="goto" data-v="sparen">
+      <span><b>Sparziel ${fmt0(g.betrag)}</b><small class="${line.cls}">${esc(line.text)}</small></span>
+      <span class="goal-bar sm"><span class="fill${st.diff < 0 && st.started ? " behind" : ""}" style="width:${Math.max(0, Math.min(100, st.pct * 100)).toFixed(1)}%"></span></span>
+      <span class="num">${fmt0(st.savedTotal)} · ${Math.round(st.pct * 100)} %</span>
+    </button>`;
 }
 
 function niceMax(v) {
@@ -855,6 +869,175 @@ async function entryFile(saveIt) {
 }
 $("e-file-open").addEventListener("click", () => entryFile(false));
 $("e-file-save").addEventListener("click", () => entryFile(true));
+
+// =====================================================================
+// Sparziel: goal, progress, what is still free this month, where the money goes, budget plan
+// =====================================================================
+const ymLabel = (ym) => `${MONTHS_LONG[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
+const ymShort = (ym) => `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(2, 4)}`;
+
+function goalForm(g) {
+  const nowYm = todayIso().slice(0, 7);
+  const starts = Array.from({ length: 25 }, (_, i) => addYm(nowYm, i - 12));
+  return `<form id="goal-form" class="fields" novalidate>
+      <div class="field"><label for="g-betrag">Sparziel (CHF)</label><input id="g-betrag" type="text" inputmode="decimal" value="${amountText(g ? g.betrag : 1500000)}"></div>
+      <div class="field"><label for="g-start">Ab Monat</label><select id="g-start">${starts.map((ym) => `<option value="${ym}"${ym === (g?.start || nowYm) ? " selected" : ""}>${ymLabel(ym)}</option>`).join("")}</select></div>
+      <div class="field"><label for="g-monate">Dauer</label><select id="g-monate">${[6, 12, 18, 24, 36].map((n) => `<option value="${n}"${n === (g?.monate || 12) ? " selected" : ""}>${n} Monate</option>`).join("")}</select></div>
+      <div class="field" style="align-self:end"><button class="btn" type="submit">${g ? "Ziel speichern" : "Ziel festlegen"}</button></div>
+      <p class="msg err w4" id="g-msg" role="alert"></p>
+    </form>`;
+}
+
+function goalLine(g, st) {
+  if (!st.started) return { cls: "", text: `Das Ziel startet im ${ymLabel(g.start)}.` };
+  if (st.reached) return { cls: "inc", text: `Ziel erreicht: ${fmt0(st.savedTotal)} gespart.` };
+  if (st.ended) return { cls: "exp", text: `Die Zeit ist um: ${fmt0(st.savedTotal)} von ${fmt0(g.betrag)} gespart.` };
+  if (!st.fullMonths) return { cls: "", text: `Der erste Monat läuft. Ziel: Ende ${ymLabel(g.start)} sollen ${fmt0(st.target)} übrig sein.` };
+  return st.diff >= 0
+    ? { cls: "inc", text: `Auf Kurs: ${fmt0(st.diff)} vor dem Plan.` }
+    : { cls: "exp", text: `${fmt0(-st.diff)} hinter dem Plan. Bis Ende ${ymLabel(st.endYm)} brauchst du jetzt ${fmt0(st.needPerMonth)} pro Monat.` };
+}
+
+function goalChart(st) {
+  const nowYm = todayIso().slice(0, 7);
+  const vals = st.months.map((m) => (m.ym <= nowYm ? m.saved : null));
+  const hi = Math.max(st.target, ...vals.filter((v) => v != null)), lo = Math.min(0, ...vals.filter((v) => v != null));
+  const max = niceMax(hi), min = lo < 0 ? -niceMax(-lo) / 2 : 0;
+  const W = 640, H = 220, L = 50, R = 8, T = 10, B = 26, n = st.months.length, cw = (W - L - R) / n, bw = Math.min(26, cw * 0.6);
+  const ys = (v) => T + (H - T - B) * (max - v) / (max - min);
+  const axis = (cent) => { const e = cent / 100; return Math.abs(e) >= 1000 ? (e / 1000).toLocaleString("de-CH", { maximumFractionDigits: 1 }) + "k" : String(Math.round(e)); };
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Gespart pro Monat im Vergleich zum Plan">`;
+  for (let i = 0; i <= 4; i++) { const v = min + ((max - min) / 4) * i, yy = ys(v); svg += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}"/><text class="axis" x="${L - 8}" y="${yy + 4}" text-anchor="end">${axis(v)}</text>`; }
+  st.months.forEach((m, i) => {
+    const cx = L + cw * i + cw / 2, v = vals[i];
+    if (v != null) {
+      const cls = v >= m.target ? "b-inc" : v > 0 ? "b-warn" : "b-exp";
+      svg += `<rect class="${cls}${m.ym === nowYm ? " dim" : ""}" x="${cx - bw / 2}" y="${Math.min(ys(v), ys(0))}" width="${bw}" height="${Math.abs(ys(0) - ys(v))}" rx="2"><title>${ymLabel(m.ym)}: ${fmt(v)} gespart (Plan ${fmt0(m.target)})${m.ym === nowYm ? ", Monat läuft noch" : ""}</title></rect>`;
+    } else svg += `<rect class="b-future" x="${cx - bw / 2}" y="${ys(m.target)}" width="${bw}" height="${ys(0) - ys(m.target)}" rx="2"><title>${ymLabel(m.ym)}: Plan ${fmt0(m.target)}</title></rect>`;
+    if (n <= 12 || i % 2 === 0) svg += `<text class="axis" x="${cx}" y="${H - 8}" text-anchor="middle">${n <= 12 ? MONTHS[+m.ym.slice(5, 7) - 1] : ymShort(m.ym)}</text>`;
+  });
+  svg += `<line class="target" x1="${L}" x2="${W - R}" y1="${ys(st.target)}" y2="${ys(st.target)}"/>`;
+  return svg + "</svg>";
+}
+
+function analysisHtml(an) {
+  if (!an.n) return `<section class="panel"><h2>Wohin dein Geld geht</h2><p class="muted">Noch keine Buchungen. Lies unter „Erfassen“ deine Kontoauszüge der letzten Monate ein, dann zeigt die App hier, wo du sparen kannst.</p><div class="actions"><button class="btn sm" data-act="goto" data-v="erfassen">Kontoauszug einlesen</button></div></section>`;
+  const period = an.months.slice().reverse().map(ymLabel).join(", ");
+  const top = Math.max(...an.cats.map((c) => c.avg), 1);
+  const cats = an.cats.map((c) => `<div class="cat"><div class="cat-top"><span>${esc(c.kategorie)} ${c.fix ? '<span class="chip neutral">fix</span>' : ""}</span><span class="num">${fmt(c.avg)}</span></div>
+      <div class="bar${c.fix ? " fixbar" : ""}"><div style="width:${((c.avg / top) * 100).toFixed(1)}%"></div></div>
+      ${c.fix ? "" : `<div class="hint">20 % weniger = ${fmt0(c.avg * 0.2 * 12)} im Jahr</div>`}</div>`).join("");
+  const abos = an.abos.length ? `<div class="list-plain">${an.abos.map((a) => `<div class="lp-row"><span><b>${esc(a.name)}</b><small>${esc(a.kategorie)} · in ${a.monate} Monaten${a.fix ? " · Fixkosten" : ""}</small></span><span class="num">${fmt(a.betrag)} / Monat<small>${fmt0(a.proJahr)} im Jahr</small></span></div>`).join("")}</div>`
+    : `<p class="muted small">Noch keine wiederkehrenden Abbuchungen erkannt. Dafür braucht es Buchungen aus mindestens zwei Monaten.</p>`;
+  const topList = `<div class="list-plain">${an.top.map((t) => `<div class="lp-row"><span><b>${esc(t.name)}</b><small>${plural(t.count, "Zahlung", "Zahlungen")}</small></span><span class="num">${fmt(t.avg)} / Monat</span></div>`).join("")}</div>`;
+  return `<section class="panel"><div class="panel-head"><h2>Wohin dein Geld geht</h2><span class="muted small">Durchschnitt pro Monat · ${esc(period)} · Geschäft und Privat</span></div>
+      <div class="kpis kpis3">
+        <div class="kpi"><span class="label">Einnahmen</span><span class="val inc">${fmt0(an.incAvg)}</span><span class="sub">pro Monat</span></div>
+        <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt0(an.expAvg)}</span><span class="sub">ohne Säule 3a und Sparen</span></div>
+        <div class="kpi"><span class="label">Bleibt übrig</span><span class="val ${an.savedAvg >= 0 ? "inc" : "exp"}">${fmt0(an.savedAvg)}</span><span class="sub">${an.incAvg > 0 ? `Sparquote ${Math.round((an.savedAvg / an.incAvg) * 100)} %` : "keine Einnahmen erfasst"}</span></div>
+      </div>
+      <div class="grid2">
+        <div><h3>Ausgaben nach Kategorie</h3><div class="cats">${cats || '<p class="muted">Keine Ausgaben.</p>'}</div></div>
+        <div style="display:grid;gap:18px;align-content:start">
+          <div><h3>Abos und regelmässige Zahlungen</h3>${abos}</div>
+          <div><h3>Grösste Ausgabenposten</h3>${topList}</div>
+          <div><h3>Kleinbeträge</h3><p class="small">${an.small.count ? `Rund <b>${an.small.count} Zahlungen unter CHF 20</b> im Monat, zusammen <b>${fmt(an.small.avg)}</b>, also ${fmt0(an.small.avg * 12)} im Jahr.` : "Kaum Zahlungen unter CHF 20."}</p></div>
+        </div>
+      </div></section>`;
+}
+
+function planHtml(plan, st, an) {
+  if (!an.n) return "";
+  const head = `<div class="panel-head"><h2>Dein Sparplan</h2><span class="muted small">Ziel: ${fmt0(st.needPerMonth || st.target)} pro Monat sparen</span></div>`;
+  if (!plan.gap) return `<section class="panel">${head}<p>Mit deinem bisherigen Durchschnitt von <b>${fmt0(an.savedAvg)}</b> pro Monat erreichst du das Ziel. Halte deine Ausgaben auf diesem Niveau. Budgets helfen dabei, dass es so bleibt.</p></section>`;
+  const set = state.data.settings.budgets || {};
+  const applied = plan.items.length && plan.items.every((i) => set[i.kategorie] === i.budget);
+  return `<section class="panel">${head}
+      <p>Bisher bleiben dir im Schnitt <b>${fmt0(an.savedAvg)}</b> im Monat. Für dein Ziel fehlen <b>${fmt0(plan.gap)}</b> pro Monat.${plan.items.length ? ` Vorschlag: jede variable Kategorie um <b>${Math.round(plan.share * 100)} %</b> senken. Fixkosten wie Miete und Krankenkasse bleiben unverändert.` : ""}</p>
+      ${plan.items.length ? `<div class="table-wrap"><table class="plan"><thead><tr><th>Kategorie</th><th class="r">Bisher</th><th class="r">Neues Budget</th><th class="r">Ersparnis</th></tr></thead><tbody>
+        ${plan.items.map((i) => `<tr><td>${esc(i.kategorie)}</td><td class="r num">${fmt0(i.avg)}</td><td class="r num"><b>${fmt0(i.budget)}</b></td><td class="r num inc">${fmt0(i.cut)}</td></tr>`).join("")}
+        <tr class="sum"><td>Total pro Monat</td><td class="r num">${fmt0(plan.items.reduce((a, i) => a + i.avg, 0))}</td><td class="r num"><b>${fmt0(plan.items.reduce((a, i) => a + i.budget, 0))}</b></td><td class="r num inc">${fmt0(plan.items.reduce((a, i) => a + i.cut, 0))}</td></tr>
+      </tbody></table></div>` : ""}
+      ${plan.rest ? `<div class="alert"><span>Auch mit diesen Budgets bleiben <strong>${fmt0(plan.rest)} pro Monat</strong> offen. Das geht nur über die Fixkosten (Krankenkasse, Wohnung, Versicherungen, Abos), mehr Einnahmen oder ein längerer Zeitraum.</span></div>` : ""}
+      ${plan.items.length ? `<div class="actions">${applied ? `<span class="msg ok">Diese Budgets sind aktiv. Die Übersicht zeigt pro Kategorie, wie viel noch frei ist.</span>` : `<button class="btn" data-act="plan-apply">Budgets übernehmen</button><span class="small muted">Du kannst sie in den Einstellungen jederzeit anpassen.</span>`}</div>` : ""}
+    </section>`;
+}
+
+function renderSavings() {
+  const s = state.data.settings, g = s.sparziel, today = todayIso();
+  const txs = allTx(), an = analyze(txs, today);
+  if (!g || state.editGoal) {
+    $("view").innerHTML = `<div class="pagehead"><h1>Sparziel</h1></div>
+      <section class="panel"><h2>${g ? "Sparziel ändern" : "Sparziel festlegen"}</h2>
+        <p class="muted">Wie viel willst du in welcher Zeit sparen? Die App rechnet aus, wie viel du dafür jeden Monat zur Seite legen musst, zeigt dir, was du diesen Monat noch ausgeben kannst, und schlägt passende Budgets vor. Einzahlungen auf Sparkonto und Säule 3a zählen als gespart.</p>
+        ${goalForm(g)}
+        ${g ? `<div class="actions"><button class="btn quiet sm" type="button" data-act="goal-cancel">Abbrechen</button><button class="btn ghost danger sm" type="button" data-act="goal-del">Ziel löschen</button></div>` : ""}
+      </section>
+      ${analysisHtml(an)}`;
+    $("goal-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const betrag = parseBetrag($("g-betrag").value);
+      if (!betrag || betrag <= 0) { $("g-msg").textContent = "Bitte einen Betrag eingeben, z. B. 15'000."; return; }
+      s.sparziel = { betrag: Math.abs(betrag), start: $("g-start").value, monate: +$("g-monate").value };
+      state.editGoal = false; save(); renderSavings();
+    });
+    setHandlers((act) => {
+      if (act === "goal-cancel") { state.editGoal = false; renderSavings(); }
+      else if (act === "goal-del" && confirm("Sparziel löschen? Deine Buchungen bleiben erhalten.")) { delete s.sparziel; state.editGoal = false; save(); renderSavings(); }
+    });
+    return;
+  }
+
+  const st = goalStatus(g, txs, today);
+  const rate = st.started ? st.needPerMonth : st.target;
+  const plan = budgetPlan(an, rate);
+  const tm = thisMonth(txs, today, rate, an.incAvg);
+  const line = goalLine(g, st);
+  const pct = Math.max(0, Math.min(100, st.pct * 100)), sollPct = Math.min(100, (st.soll / g.betrag) * 100);
+  const tipList = tips(an, an.abos);
+  $("view").innerHTML = `
+    <div class="pagehead"><h1>Sparziel</h1><button class="btn ghost sm" data-act="goal-edit">Ziel ändern</button></div>
+    <section class="panel goal">
+      <div class="panel-head"><h2>${fmt0(g.betrag)} sparen bis Ende ${ymLabel(st.endYm)}</h2><span class="muted small">${ymLabel(g.start)} bis ${ymLabel(st.endYm)} · Plan ${fmt0(st.target)} pro Monat</span></div>
+      <div class="goal-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}" aria-label="Fortschritt Sparziel">
+        <div class="fill${st.diff < 0 && st.started ? " behind" : ""}" style="width:${pct.toFixed(1)}%"></div>
+        ${st.started && !st.ended && st.fullMonths ? `<div class="mark" style="left:${sollPct.toFixed(1)}%" title="Plan nach ${plural(st.fullMonths, "Monat", "Monaten")}: ${fmt0(st.soll)}"></div>` : ""}
+      </div>
+      <div class="goal-legend"><span><b class="num">${fmt(st.savedTotal)}</b> gespart · ${Math.round(st.pct * 100)} %</span>${st.started && !st.ended && st.fullMonths ? `<span class="muted">Plan nach ${plural(st.fullMonths, "Monat", "Monaten")}: ${fmt0(st.soll)}</span>` : ""}</div>
+      <p class="goal-status ${line.cls}"><b>${esc(line.text)}</b></p>
+    </section>
+    <section class="kpis" aria-label="Sparziel in Zahlen">
+      <div class="kpi"><span class="label">Pro Monat nötig</span><span class="val">${fmt0(rate)}</span><span class="sub">${st.started ? `noch ${plural(st.remainingMonths, "Monat", "Monate")}` : `ab ${ymLabel(g.start)}`}</span></div>
+      <div class="kpi"><span class="label">Bisher pro Monat</span><span class="val ${an.savedAvg >= rate ? "inc" : "exp"}">${an.n ? fmt0(an.savedAvg) : "–"}</span><span class="sub">${an.n ? `Durchschnitt ${plural(an.n, "Monat", "Monate")}` : "noch keine Buchungen"}</span></div>
+      <div class="kpi"><span class="label">Prognose</span><span class="val ${st.prognose == null ? "" : st.prognose >= g.betrag ? "inc" : "exp"}">${st.prognose == null ? "–" : fmt0(st.prognose)}</span><span class="sub">${st.prognose == null ? "nach dem ersten vollen Monat" : "bei gleichem Tempo"}</span></div>
+      <div class="kpi"><span class="label">Diesen Monat noch frei</span><span class="val ${tm.free >= 0 ? "inc" : "exp"}">${fmt0(tm.free)}</span><span class="sub">${tm.free > 0 ? `${fmt0(tm.perDay)} pro Tag · ${plural(tm.daysLeft, "Tag", "Tage")}` : "Sparrate in Gefahr"}</span></div>
+    </section>
+    <div class="grid2">
+      <section class="panel"><div class="panel-head"><h2>Gespart pro Monat</h2><div class="legend"><span><i style="background:var(--inc)"></i>Plan erreicht</span><span><i style="background:var(--warn)"></i>darunter</span><span><i style="background:var(--exp)"></i>Minus</span></div></div>
+        <div class="chart">${goalChart(st)}</div>
+        <p class="small muted">Gespart = Einnahmen minus Ausgaben. Einzahlungen auf Sparkonto und Säule 3a zählen als gespart.</p></section>
+      <section class="panel"><h2>Diesen Monat</h2>
+        <div class="calc">
+          <div><span>Einnahmen${tm.incomeExpected ? " (erwartet, Durchschnitt)" : ""}</span><span class="num inc">${fmt(tm.income)}</span></div>
+          <div><span>− Sparrate fürs Ziel</span><span class="num">${fmt(rate)}</span></div>
+          <div><span>− bisherige Ausgaben</span><span class="num exp">${fmt(tm.exp)}</span></div>
+          <div class="total"><span>Noch frei bis Monatsende</span><span class="num ${tm.free >= 0 ? "inc" : "exp"}">${fmt(tm.free)}</span></div>
+        </div>
+        <p class="small">${tm.free > 0 ? `Das sind <b>${fmt(tm.perDay)} pro Tag</b> für die restlichen ${plural(tm.daysLeft, "Tag", "Tage")}.` : `Diesen Monat ist nichts mehr frei, wenn du die Sparrate einhalten willst. Jeder weitere Franken geht vom Ziel ab.`}</p>
+      </section>
+    </div>
+    ${planHtml(plan, st, an)}
+    ${tipList.length ? `<section class="panel"><h2>Spartipps für dich</h2><div class="tips">${tipList.map((t) => `<div><b>${esc(t.title)}</b><span class="small">${esc(t.text)}</span></div>`).join("")}</div></section>` : ""}
+    ${analysisHtml(an)}`;
+  setHandlers((act) => {
+    if (act === "goal-edit") { state.editGoal = true; renderSavings(); }
+    else if (act === "plan-apply") {
+      s.budgets = { ...(s.budgets || {}) };
+      for (const i of plan.items) s.budgets[i.kategorie] = i.budget;
+      save(); toast(`${plural(plan.items.length, "Budget", "Budgets")} übernommen.`); renderSavings();
+    }
+  });
+}
 
 // =====================================================================
 // Wiederkehrend

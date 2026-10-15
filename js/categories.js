@@ -11,8 +11,9 @@ export const KONTEN_AUS = {
 };
 export const PRIVAT_EIN = ["Lohn", "Nebenerwerb", "Rückerstattung", "Sonstige Einnahme privat"];
 export const PRIVAT_AUS = [
-  "Wohnen & Miete", "Krankenkasse", "Lebensmittel", "Mobilität", "Versicherungen privat", "Steuern", "Säule 3a",
-  "Gesundheit", "Kleidung", "Freizeit & Ferien", "Sparen & Anlegen", "Sonstiges privat",
+  "Wohnen & Miete", "Krankenkasse", "Lebensmittel", "Restaurant & Ausgang", "Mobilität", "Versicherungen privat", "Steuern",
+  "Handy & Internet", "Abos & Streaming", "Haushalt", "Online-Shopping", "Bargeld", "Gesundheit", "Kleidung", "Freizeit & Ferien",
+  "Säule 3a", "Sparen & Anlegen", "Sonstiges privat",
 ];
 
 export const KAT = {
