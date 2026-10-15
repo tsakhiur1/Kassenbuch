@@ -242,10 +242,12 @@ export function parseLohn(doc, ctx) {
 
 const BALANCE = /(saldo|übertrag|uebertrag|kontostand|anfangsbestand|schlussbestand|total\s+(?:belastung|gutschrift|umsatz))/i;
 
-function nearestColumn(cols, cx) {
+// an amount further away than this from every column heading belongs to none (e.g. in the text)
+// (PDF points; OCR coordinates are image pixels, about twice as large)
+function nearestColumn(cols, cx, reach = 90) {
   let best = null, dist = Infinity;
   for (const [name, x] of Object.entries(cols)) if (Math.abs(x - cx) < dist) { dist = Math.abs(x - cx); best = name; }
-  return best;
+  return dist <= reach ? best : null;
 }
 
 // "3" and "243.00" right next to each other are one amount written with a space: "3 243.00".
@@ -263,7 +265,7 @@ function joinThousands(items) {
 
 export function parseStatement(doc) {
   const out = [];
-  let cols = null, prevSaldo = null, last = null;
+  let cols = null, prevSaldo = null, last = null, lastDate = null;
   for (const row of doc.rows) {
     const line = row.items.map((i) => i.str).join(" ");
     const hdr = {};
@@ -278,7 +280,8 @@ export function parseStatement(doc) {
     if ((hdr.debit && hdr.credit) || (hdr.amount && /datum|date/i.test(line))) { cols = hdr; continue; }
 
     const head = row.items.slice(0, 2).map((i) => i.str).join(" ");
-    const dates = findDates(head);
+    // the booking date opens the line; a date further in is part of the text ("KAUF VOM 02.01.2026")
+    const dates = findDates(head).filter((d) => d.index <= 2);
     const amts = [];
     const items = joinThousands(row.items);
     for (const it of items) {
@@ -287,16 +290,30 @@ export function parseStatement(doc) {
       if (/^[-−]?\d{1,3}(?: \d{3})+[.,]\d{2}-?$/.test(it.str.trim())) { amts.push({ rappen: parseBetrag(it.str), index: 0, cx }); continue; }
       for (const a of findAmounts(it.str)) amts.push({ ...a, cx });
     }
-    if (dates.length && amts.length) {
+    // Banks like PostFinance print the date only on the first booking of a day:
+    // a dated row sets the day, and the following rows without a date belong to it.
+    if (dates.length) lastDate = dates[0].iso;
+    if (amts.length && (dates.length || lastDate)) {
       if (BALANCE.test(line) && amts.length <= 2) { prevSaldo = amts[amts.length - 1].rappen; last = null; continue; }
-      let value = null, saldo = null, unsicher = false;
+      let value = null, saldo = null, unsicher = false, inCols = 0;
       if (cols) {
         for (const a of amts) {
-          const col = nearestColumn(cols, a.cx);
-          if (col === "debit") value = -Math.abs(a.rappen);
-          else if (col === "credit") value = Math.abs(a.rappen);
+          const col = nearestColumn(cols, a.cx, doc.ocr ? 200 : 90);
+          if (!col) continue;
+          if (col === "debit") { value = -Math.abs(a.rappen); inCols++; }
+          else if (col === "credit") { value = Math.abs(a.rappen); inCols++; }
           else if (col === "saldo") saldo = a.rappen;
-          else if (col === "amount") value = a.rappen;
+          else if (col === "amount") { value = a.rappen; inCols++; }
+        }
+      }
+      if (!dates.length) {
+        // without its own date, only a clear booking line counts: exactly one amount in the
+        // debit/credit column, or (without columns) an amount that matches the balance change
+        const sumLine = /^\s*(total|summe|zwischensumme|übertrag|uebertrag)\b/i.test(line);
+        const bySaldo = !cols && amts.length >= 2 && prevSaldo != null && Math.abs(Math.abs(amts[amts.length - 1].rappen - prevSaldo) - Math.abs(amts[0].rappen)) <= 1;
+        if (sumLine || !(cols ? inCols === 1 : bySaldo)) {
+          if (saldo != null && !sumLine) prevSaldo = saldo;
+          continue;
         }
       }
       if (value == null) {
@@ -307,8 +324,9 @@ export function parseStatement(doc) {
         else { value = -first; unsicher = true; }
       }
       if (saldo != null) prevSaldo = saldo;
-      const words = items.map((i) => i.str).filter((s) => !findDates(s).length && !findAmounts(s).length && !/^(chf|eur)$/i.test(s.trim()));
-      last = { datum: dates[0].iso, betragCent: Math.abs(value), typ: value > 0 ? "einnahme" : "ausgabe", text: words.join(" ").replace(/\s+/g, " ").trim().slice(0, 140), partner: "", unsicher, page: row.page, y: row.y };
+      // keep the booking text, drop cells that are only a date, an amount or a currency
+      const words = items.map((i) => i.str.trim()).filter((s) => !/^[-−–]?[\d'’.,:/\s\u00a0\u2009\u202f–-]+$/.test(s) && !/^(chf|eur)$/i.test(s));
+      last = { datum: dates.length ? dates[0].iso : lastDate, betragCent: Math.abs(value), typ: value > 0 ? "einnahme" : "ausgabe", text: words.join(" ").replace(/\s+/g, " ").trim().slice(0, 140), partner: "", unsicher, page: row.page, y: row.y };
       if (last.betragCent) out.push(last);
     } else if (last && !dates.length && !amts.length && line.trim() && row.page === last.page && Math.abs(row.y - last.y) < 40 && !BALANCE.test(line)) {
       // multi-line booking text continues below the first line
