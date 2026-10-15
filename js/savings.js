@@ -5,6 +5,8 @@ import { merchantKey } from "./learn.js";
 
 // Money moved to savings is not spent: it counts towards the goal.
 export const SPAR_KAT = new Set(["Säule 3a", "Sparen & Anlegen"]);
+// Money taken back from savings is no income: it lowers what has been saved.
+export const SPAR_RUECK = new Set(["Entnahme Sparkonto"]);
 // Costs that cannot be cut from one month to the next (they need a contract change).
 export const FIX_KAT = new Set([
   "Wohnen & Miete", "Krankenkasse", "Versicherungen privat", "Steuern",
@@ -23,16 +25,23 @@ export function addYm(ym, n) {
 const daysInMonth = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate();
 const isSaving = (t) => t.typ === "ausgabe" && SPAR_KAT.has(t.kategorie);
 const isSpend = (t) => t.typ === "ausgabe" && !SPAR_KAT.has(t.kategorie);
+const isWithdrawal = (t) => t.typ === "einnahme" && SPAR_RUECK.has(t.kategorie);
+export const isTransfer = (t) => (t.typ === "ausgabe" ? SPAR_KAT.has(t.kategorie) : SPAR_RUECK.has(t.kategorie));
+const isIncome = (t) => t.typ === "einnahme" && !SPAR_RUECK.has(t.kategorie);
 
 function monthTotals(txs, ym) {
   const m = { ym, inc: 0, exp: 0, spar: 0 };
   for (const t of txs) {
     if (ymOf(t.datum) !== ym) continue;
-    if (t.typ === "einnahme") m.inc += t.betragCent;
+    if (isWithdrawal(t)) m.spar -= t.betragCent;
+    else if (t.typ === "einnahme") m.inc += t.betragCent;
     else if (isSaving(t)) m.spar += t.betragCent;
     else m.exp += t.betragCent;
   }
-  m.saved = m.inc - m.exp; // what is left over, including transfers to savings
+  m.withdrawn = 0;
+  for (const t of txs) if (ymOf(t.datum) === ym && isWithdrawal(t)) m.withdrawn += t.betragCent;
+  // what is left over, including transfers to savings; money taken out of savings counts against it
+  m.saved = m.inc - m.exp - m.withdrawn;
   return m;
 }
 
@@ -83,7 +92,8 @@ export function analyze(txs, today) {
   const per = (v) => (n ? Math.round(v / n) : 0);
   const sum = (list) => list.reduce((a, t) => a + t.betragCent, 0);
   const spend = inWin.filter(isSpend);
-  const incAvg = per(sum(inWin.filter((t) => t.typ === "einnahme")));
+  const incAvg = per(sum(inWin.filter(isIncome)));
+  const withdrawnAvg = per(sum(inWin.filter(isWithdrawal)));
   const expAvg = per(sum(spend));
 
   const byCat = new Map();
@@ -128,7 +138,7 @@ export function analyze(txs, today) {
   }
   const top = [...byMerchant.values()].map((e) => ({ name: e.name, avg: per(e.sum), count: e.count })).sort((a, b) => b.avg - a.avg).slice(0, 5);
 
-  return { months, n, incAvg, expAvg, savedAvg: incAvg - expAvg, spar, cats, abos, small, top };
+  return { months, n, incAvg, expAvg, withdrawnAvg, savedAvg: incAvg - expAvg - withdrawnAvg, spar, cats, abos, small, top };
 }
 
 // Budgets that close the gap between what is saved now and what the goal needs. Fixed costs stay;

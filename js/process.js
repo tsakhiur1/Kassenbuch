@@ -27,14 +27,14 @@ export async function processFile(file, ctx, onProgress = () => {}, depth = 0) {
     onProgress("Kontoauszug wird gelesen …");
     const rows = parseCsvRows(parseCsv(decodeText(new Uint8Array(await file.arrayBuffer()))));
     if (!rows.length) throw new Error("In der CSV-Datei wurden keine Bewegungen gefunden.");
-    return [{ kind: "auszug", name: file.name, rows: categorizeRows(rows, ctx.learn), konto: {}, file: null }];
+    return [{ kind: "auszug", name: file.name, rows: categorizeRows(rows, ctx.learn, ctx.eigeneKonten), konto: {}, file: null }];
   }
 
   if (e === "xml" || /\/xml$/.test(type)) {
     onProgress("Kontoauszug wird gelesen …");
     const st = parseCamt(decodeText(new Uint8Array(await file.arrayBuffer())));
     const hinweis = st.waehrung !== "CHF" ? `Das Konto lautet auf ${st.waehrung}. Die Beträge werden ohne Umrechnung übernommen.` : "";
-    return [{ kind: "auszug", name: file.name, rows: categorizeRows(st.rows, ctx.learn), konto: st.konto, hinweis, file: null }];
+    return [{ kind: "auszug", name: file.name, rows: categorizeRows(st.rows, ctx.learn, ctx.eigeneKonten), konto: st.konto, hinweis, file: null }];
   }
 
   let doc;
@@ -68,7 +68,7 @@ function fromDoc(doc, ctx, { name, file }) {
     if (rows.length) {
       const unsure = rows.filter((r) => r.unsicher).length;
       return {
-        kind: "auszug", name, file, preview: doc.preview, rows: categorizeRows(rows, ctx.learn), konto: {},
+        kind: "auszug", name, file, preview: doc.preview, rows: categorizeRows(rows, ctx.learn, ctx.eigeneKonten), konto: {},
         hinweis: unsure ? `Bei ${unsure} Bewegungen war nicht klar, ob Belastung oder Gutschrift. Sie sind als Ausgabe markiert, bitte prüfen.` : "",
       };
     }

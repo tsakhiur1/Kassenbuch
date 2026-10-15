@@ -7,7 +7,7 @@ import { train, learnedCount } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
-import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm } from "./savings.js";
+import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer } from "./savings.js";
 
 const $ = (id) => document.getElementById(id);
 const PERIOD_SIZE = { monat: 1, quartal: 3, semester: 6, jahr: 12 };
@@ -241,7 +241,8 @@ function setHandlers(click, change = () => {}, input = () => {}) { pageClick = c
 function renderOverview() {
   const r = range(), modus = mwstModus(), biz = state.bereich === "geschaeft";
   const brutto = !biz || modus !== "effektiv";
-  const all = visibleTx(), inP = all.filter((t) => inRange(t, r)), s = sums(inP);
+  const all = visibleTx().filter((t) => !isTransfer(t)), inP = all.filter((t) => inRange(t, r)), s = sums(inP);
+  const moved = visibleTx().filter((t) => isTransfer(t) && inRange(t, r)).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
   const inc = brutto ? s.incB : s.incN, exp = brutto ? s.expB : s.expN, profit = inc - exp;
   const count = (typ) => plural(inP.filter((t) => t.typ === typ).length, "Buchung", "Buchungen");
 
@@ -281,7 +282,7 @@ function renderOverview() {
     <section class="kpis" aria-label="Kennzahlen">
       <div class="kpi"><span class="label">Einnahmen</span><span class="val inc">${fmt(inc)}</span><span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span></div>
       <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt(exp)}</span><span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span></div>
-      <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}</span></div>
+      <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}${moved > 0 ? ` · davon ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}</span></div>
       <div class="kpi"><span class="label">${k4.label}</span><span class="val ${k4.cls}">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
     ${goalStrip()}
@@ -408,7 +409,7 @@ async function runItem(item) {
   item.step = "Wird gelesen …"; renderQueue();
   try {
     const s = state.data.settings;
-    const results = await processFile(item.file, { firma: s.firma, ibans: s.ibans, learn: state.data.learn }, (msg) => { item.step = msg; renderQueue(); });
+    const results = await processFile(item.file, { firma: s.firma, ibans: s.ibans, eigeneKonten: [...(s.eigeneKonten || []), ...(s.ibans || [])], learn: state.data.learn }, (msg) => { item.step = msg; renderQueue(); });
     const at = state.queue.indexOf(item);
     const items = results.map((r) => ({ id: uid(), state: "review", ...r, name: r.name || item.name }));
     for (const it of items) if (it.kind === "auszug") markDupes(it.rows, state.data);
@@ -482,12 +483,18 @@ function docHtml(it, head) {
 // Movements already booked (from an earlier import) whose date or order differs from this statement.
 function misaligned(it) {
   return it.rows.map((r, i) => ({ r, i, t: r.dup && r.dupId && state.data.tx[r.dupId] }))
-    .filter(({ r, i, t }) => t && (t.datum !== r.datum || (String(t.quelle || "").startsWith("Kontoauszug") && t.reihe !== i)));
+    .filter(({ r, i, t }) => t && (t.datum !== r.datum || (String(t.quelle || "").startsWith("Kontoauszug") && t.reihe !== i)
+      || (isTransfer(r) && t.kategorie !== r.kategorie)));
 }
 
 function alignBooked(it) {
   const list = misaligned(it);
-  for (const { r, i, t } of list) { t.datum = r.datum; if (String(t.quelle || "").startsWith("Kontoauszug")) { t.reihe = i; t.quelle = `Kontoauszug ${it.name}`; } }
+  for (const { r, i, t } of list) {
+    t.datum = r.datum;
+    // a transfer to or from an own account booked under another category before
+    if (isTransfer(r) && t.kategorie !== r.kategorie) { t.kategorie = r.kategorie; t.bereich = "privat"; }
+    if (String(t.quelle || "").startsWith("Kontoauszug")) { t.reihe = i; t.quelle = `Kontoauszug ${it.name}`; }
+  }
   save();
   toast(`${plural(list.length, "Buchung", "Buchungen")} an den Kontoauszug angeglichen.`);
   renderQueue();
@@ -515,7 +522,7 @@ function statementHtml(it, head) {
     ${meta ? `<p class="small muted">${meta}</p>` : ""}
     ${it.hinweis ? `<ul class="warnings"><li>${esc(it.hinweis)}</li></ul>` : ""}
     <p class="small muted">${plural(it.rows.length, "Bewegung", "Bewegungen")}${dups ? ` · ${dups} sehen schon gebucht aus und sind abgewählt` : ""}. Die MWST steht nicht im Kontoauszug und wird mit 0 % gebucht. Für die Vorsteuer den Geschäftsbeleg einlesen.</p>
-    ${misaligned(it).length ? `<div class="alert info"><span>${plural(misaligned(it).length, "gebuchte Bewegung weicht", "gebuchte Bewegungen weichen")} beim Datum oder in der Reihenfolge von diesem Auszug ab.</span><button class="btn ghost sm" data-act="q-align" data-q="${it.id}">An Auszug angleichen</button></div>` : ""}
+    ${misaligned(it).length ? `<div class="alert info"><span>${plural(misaligned(it).length, "gebuchte Bewegung weicht", "gebuchte Bewegungen weichen")} beim Datum, in der Reihenfolge oder als Übertrag aufs Sparkonto von diesem Auszug ab.</span><button class="btn ghost sm" data-act="q-align" data-q="${it.id}">An Auszug angleichen</button></div>` : ""}
     <div class="imp">${rows}</div>
     <div class="actions">
       <button class="btn" data-act="q-book-rows" data-q="${it.id}" ${sel && !it.busy ? "" : "disabled"}>${plural(sel, "Bewegung", "Bewegungen")} buchen</button>
@@ -526,7 +533,16 @@ function statementHtml(it, head) {
 }
 
 // Patch only cards that changed, so typing in one card survives progress in another.
+// Replacing a card can blur the field being edited, and that field's change event renders again.
+// Such a nested render waits until the current one is done.
+let queueRendering = false, queueAgain = false;
 function renderQueue() {
+  if (queueRendering) { queueAgain = true; return; }
+  queueRendering = true;
+  try { renderQueueNow(); } finally { queueRendering = false; }
+  if (queueAgain) { queueAgain = false; renderQueue(); }
+}
+function renderQueueNow() {
   const el = $("queue");
   if (!el || !state.data) return;
   ensureDatalists();
@@ -1139,6 +1155,7 @@ function renderSettings() {
         <div class="set-grid">
           <div class="field"><label for="s-firma">Dein Name oder Firmenname</label><input type="text" id="s-firma" value="${esc(s.firma)}"><span class="hint">Hilft der KI zu erkennen, ob eine Rechnung von dir stammt (Einnahme).</span></div>
           <div class="field"><label for="s-ibans">Deine Geschäfts-IBAN(s)</label><textarea id="s-ibans" rows="2" placeholder="CH93 0076 2011 6238 5295 7">${esc((s.ibans || []).join("\n"))}</textarea><span class="hint">Eine pro Zeile. Steht sie auf einer QR-Rechnung, ist es deine Rechnung an einen Kunden.</span></div>
+          <div class="field"><label for="s-eigene">Deine Spar- und Anlagekonten</label><textarea id="s-eigene" rows="2" placeholder="Sparkonto CH12 0900 0000 1234 5678 9&#10;E-Trading CH34 0900 0000 9876 5432 1">${esc((s.eigeneKonten || []).join("\n"))}</textarea><span class="hint">IBAN oder Kontonummer von Sparkonto, E-Trading, 3a usw., eine pro Zeile. Überträge dorthin zählen als gespart, nicht als Ausgabe. Wörter wie „Übertrag“, „Sparkonto“ oder „E-Trading“ erkennt die App auch ohne Eintrag.</span></div>
         </div>
       </section>
       <section class="panel"><h2>MWST</h2>
@@ -1218,6 +1235,7 @@ function renderSettings() {
   }, (e) => {
     const id = e.target.id;
     if (id === "s-firma") { s.firma = e.target.value.trim(); save(); }
+    else if (id === "s-eigene") { s.eigeneKonten = e.target.value.split(/\n+/).map((x) => x.trim()).filter(Boolean); save(); }
     else if (id === "s-ibans") { s.ibans = e.target.value.split(/[\n,;]+/).map((x) => x.replace(/\s/g, "").toUpperCase()).filter(Boolean); save(); }
     else if (id === "s-mwst") { s.mwst = e.target.value; save(); renderSettings(); }
     else if (id === "s-saldo") {

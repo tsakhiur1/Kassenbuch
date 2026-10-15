@@ -240,7 +240,11 @@ export function parseLohn(doc, ctx) {
 
 // ---------- bank statements (PDF or scan, using the column positions) ----------
 
-const BALANCE = /(saldo|übertrag|uebertrag|kontostand|anfangsbestand|schlussbestand|total\s+(?:belastung|gutschrift|umsatz))/i;
+// A balance line holds nothing but a label like "Kontostand per", "Saldovortrag" or "Übertrag".
+// "ÜBERTRAG AUF SPARKONTO" or "SALDO DIENSTLEISTUNGSPREISE" are real bookings.
+const BALANCE_LABEL = /^(kontostand|saldo|saldovortrag|saldoübertrag|saldouebertrag|übertrag|uebertrag|vortrag|anfangssaldo|schlusssaldo|anfangsbestand|schlussbestand|neuer saldo|alter saldo|total|summe)(\s+(per|vom|am|in|chf|eur|von|auf|seite|belastungen|gutschriften|lastschriften|umsatz|\d+|[.:,/-]))*\s*$/i;
+const labelOf = (items) => items.map((i) => i.str.trim()).filter((s) => !/^[-−–]?[\d'’.,:/\s\u00a0\u2009\u202f–-]+$/.test(s) && !/^(chf|eur)$/i.test(s))
+  .join(" ").replace(/\d{1,2}\.\d{1,2}\.\d{2,4}/g, "").replace(/\s+/g, " ").trim();
 
 // an amount further away than this from every column heading belongs to none (e.g. in the text)
 // (PDF points; OCR coordinates are image pixels, about twice as large)
@@ -294,7 +298,6 @@ export function parseStatement(doc) {
     // a dated row sets the day, and the following rows without a date belong to it.
     if (dates.length) lastDate = dates[0].iso;
     if (amts.length && (dates.length || lastDate)) {
-      if (BALANCE.test(line) && amts.length <= 2) { prevSaldo = amts[amts.length - 1].rappen; last = null; continue; }
       let value = null, saldo = null, unsicher = false, inCols = 0;
       if (cols) {
         for (const a of amts) {
@@ -306,13 +309,23 @@ export function parseStatement(doc) {
           else if (col === "amount") { value = a.rappen; inCols++; }
         }
       }
+      // A balance line ("Kontostand", "Saldovortrag", "Übertrag" carried over to the next page) is
+      // skipped. But "ÜBERTRAG" with one amount in the debit or credit column is a transfer
+      // between own accounts (PostFinance writes the details on the next line).
+      const label = labelOf(items);
+      const transferLine = cols && inCols === 1 && /^(ü|ue)bertrag\b/i.test(label);
+      if (BALANCE_LABEL.test(label) && amts.length <= 2 && !transferLine) { prevSaldo = amts[amts.length - 1].rappen; last = null; continue; }
       if (!dates.length) {
         // without its own date, only a clear booking line counts: exactly one amount in the
         // debit/credit column, or (without columns) an amount that matches the balance change
-        const sumLine = /^\s*(total|summe|zwischensumme|übertrag|uebertrag)\b/i.test(line);
+        const sumLine = (BALANCE_LABEL.test(label) && !transferLine) || /^\s*(total|summe|zwischensumme)\b/i.test(line);
         const bySaldo = !cols && amts.length >= 2 && prevSaldo != null && Math.abs(Math.abs(amts[amts.length - 1].rappen - prevSaldo) - Math.abs(amts[0].rappen)) <= 1;
         if (sumLine || !(cols ? inCols === 1 : bySaldo)) {
           if (saldo != null && !sumLine) prevSaldo = saldo;
+          // the second text line of a booking, with only the balance next to it
+          if (!sumLine && cols && !inCols && label && last && row.page === last.page && Math.abs(row.y - last.y) < 40) {
+            last.text = `${last.text} ${label}`.slice(0, 140); last.y = row.y;
+          }
           continue;
         }
       }
@@ -328,7 +341,7 @@ export function parseStatement(doc) {
       const words = items.map((i) => i.str.trim()).filter((s) => !/^[-−–]?[\d'’.,:/\s\u00a0\u2009\u202f–-]+$/.test(s) && !/^(chf|eur)$/i.test(s));
       last = { datum: dates.length ? dates[0].iso : lastDate, betragCent: Math.abs(value), typ: value > 0 ? "einnahme" : "ausgabe", text: words.join(" ").replace(/\s+/g, " ").trim().slice(0, 140), partner: "", unsicher, page: row.page, y: row.y };
       if (last.betragCent) out.push(last);
-    } else if (last && !dates.length && !amts.length && line.trim() && row.page === last.page && Math.abs(row.y - last.y) < 40 && !BALANCE.test(line)) {
+    } else if (last && !dates.length && !amts.length && line.trim() && row.page === last.page && Math.abs(row.y - last.y) < 40 && !BALANCE_LABEL.test(labelOf(row.items))) {
       // multi-line booking text continues below the first line
       last.text = `${last.text} ${line.trim()}`.slice(0, 140);
       last.y = row.y;
@@ -402,8 +415,23 @@ function guessColumns(rows) {
 
 // ---------- shared: sort statement lines with the learning model ----------
 
-export function categorizeRows(rows, learn) {
+// Money moved between your own accounts (Privatkonto, Sparkonto, E-Trading) is saving or taking
+// savings back, not spending or income.
+const OWN_TRANSFER = /(übertrag|uebertrag|kontoübertrag|kontouebertrag|umbuchung|eigenes konto|eigene konten|spar-?konto|sparplan|e-?trading|trading-?konto|\bdepot\b|anlagekonto|vorsorgekonto|freizügigkeit)/i;
+const digitsOnly = (s) => String(s).replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+export function ownTransfer(text, ownAccounts = []) {
+  const flat = digitsOnly(text);
+  if (ownAccounts.some((a) => { const k = digitsOnly(a); return k.length >= 6 && flat.includes(k.length > 12 ? k.slice(-12) : k); })) return true;
+  return OWN_TRANSFER.test(text);
+}
+export const SPAR_EIN = "Entnahme Sparkonto";
+
+export function categorizeRows(rows, learn, ownAccounts = []) {
   for (const r of rows) {
+    if (ownTransfer(`${r.text} ${r.partner || ""}`, ownAccounts)) {
+      r.kategorie = r.typ === "ausgabe" ? "Sparen & Anlegen" : SPAR_EIN; r.bereich = "privat"; r.quelle = r.unsicher ? "unsicher" : "regel";
+      continue;
+    }
     const s = suggest(learn, { text: r.text, partner: r.partner, typ: r.typ, fallbackBereich: "privat" });
     r.kategorie = s.kategorie; r.bereich = s.bereich; r.quelle = r.unsicher ? "unsicher" : s.quelle;
   }

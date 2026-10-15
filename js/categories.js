@@ -9,7 +9,7 @@ export const KONTEN_AUS = {
   "Telefon & Internet": "6510", "Treuhand & Buchhaltung": "6530", "Software & IT": "6570", "Werbung & Marketing": "6600",
   "Reisespesen": "6640", "Kundenbetreuung": "6641", "Weiterbildung": "5810", "Sonstige Ausgabe": "6700",
 };
-export const PRIVAT_EIN = ["Lohn", "Nebenerwerb", "Rückerstattung", "Sonstige Einnahme privat"];
+export const PRIVAT_EIN = ["Lohn", "Nebenerwerb", "Rückerstattung", "Entnahme Sparkonto", "Sonstige Einnahme privat"];
 export const PRIVAT_AUS = [
   "Wohnen & Miete", "Krankenkasse", "Lebensmittel", "Restaurant & Ausgang", "Mobilität", "Versicherungen privat", "Steuern",
   "Handy & Internet", "Abos & Streaming", "Haushalt", "Online-Shopping", "Bargeld", "Gesundheit", "Kleidung", "Freizeit & Ferien",
