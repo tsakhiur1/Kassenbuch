@@ -3,18 +3,29 @@
   --bg: #eef2f0; --surface: #fbfcfb; --sunken: #e6ece9; --line: #d3ddd8; --rule: #e3eae6;
   --fg: #15221d; --muted: #5b6d65; --accent: #2c4a8f; --accent-soft: #e1e7f4; --on-accent: #ffffff;
   --inc: #1d7a4e; --inc-soft: #dcefe4; --exp: #b0382f; --exp-soft: #f6e0dd; --warn: #8a5f00; --warn-soft: #f5ead0;
+  /* chart series (validated for colour-vision deficiency): income, spending, balance; context gray */
+  --c-inc: #2a78d6; --c-exp: #eb6834; --c-bal: #1baf7a; --c-ctx: #a9b3ae; --grid: #e3eae6;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   --num: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
   --r: 10px;
   color-scheme: light;
 }
+/* Dark follows the system unless the user picked a theme (data-theme on <html>, see theme.js). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #111916; --surface: #18221e; --sunken: #141d19; --line: #2c3a34; --rule: #22302a;
     --fg: #e4ece8; --muted: #93a69d; --accent: #8ea8ec; --accent-soft: #1f2a45; --on-accent: #0f1622;
     --inc: #5cc38f; --inc-soft: #173326; --exp: #ee7b70; --exp-soft: #3a1d1a; --warn: #e2b44f; --warn-soft: #3a2f14;
+    --c-inc: #3987e5; --c-exp: #d95926; --c-bal: #199e70; --c-ctx: #4e5d57; --grid: #22302a;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #111916; --surface: #18221e; --sunken: #141d19; --line: #2c3a34; --rule: #22302a;
+    --fg: #e4ece8; --muted: #93a69d; --accent: #8ea8ec; --accent-soft: #1f2a45; --on-accent: #0f1622;
+    --inc: #5cc38f; --inc-soft: #173326; --exp: #ee7b70; --exp-soft: #3a1d1a; --warn: #e2b44f; --warn-soft: #3a2f14;
+    --c-inc: #3987e5; --c-exp: #d95926; --c-bal: #199e70; --c-ctx: #4e5d57; --grid: #22302a;
+    color-scheme: dark;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -146,7 +157,7 @@ main { padding: 24px 28px 64px; display: grid; gap: 18px; align-content: start; 
 
 /* chart and categories */
 .chart svg { width: 100%; height: auto; display: block; }
-.chart .grid-line { stroke: var(--rule); stroke-width: 1; }
+.chart .grid-line { stroke: var(--grid); stroke-width: 1; }
 .chart .axis { fill: var(--muted); font: 11px var(--num); }
 .chart .b-inc { fill: var(--inc); } .chart .b-exp { fill: var(--exp); } .chart .dim { opacity: 0.35; }
 .chart .profit { fill: none; stroke: var(--accent); stroke-width: 2; } .chart .profit-dot { fill: var(--accent); }
@@ -156,7 +167,7 @@ main { padding: 24px 28px 64px; display: grid; gap: 18px; align-content: start; 
 .cat-top { display: flex; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
 .cat-top span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar { height: 8px; background: var(--rule); border-radius: 4px; overflow: hidden; margin-top: 4px; }
-.bar > div { height: 100%; background: var(--exp); border-radius: 4px; }
+.bar > div { height: 100%; background: var(--c-exp); border-radius: 4px; }
 .bar.ok > div { background: var(--inc); } .bar.near > div { background: var(--warn); }
 .cat .hint.over { color: var(--exp); font-weight: 600; }
 
@@ -302,3 +313,70 @@ table.plan tr.sum td { border-bottom: 0; font-weight: 600; }
 table.plan input.plan-edit { width: 7.5em; text-align: right; padding: 6px 8px; }
 table.plan td { vertical-align: middle; }
 @media (max-width: 520px) { table.plan th:nth-child(4), table.plan td:nth-child(4) { display: none; } }
+
+/* ---------- theme switch ---------- */
+.themebtn .t-ico { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; }
+.themebtn .t-ico svg { width: 20px; height: 20px; }
+@media (max-width: 860px) {
+  .side .themebtn { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: 12px; flex: none; width: 40px; height: 40px; padding: 0;
+    border: 1px solid var(--line); border-radius: 50%; background: var(--surface); justify-content: center; z-index: 11; }
+  .side .themebtn .t-label { display: none; }
+  .pagehead { padding-right: 48px; }
+}
+
+/* ---------- dashboard ---------- */
+.dash-top { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr)); gap: 14px; }
+.hero, .tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.hero { background: linear-gradient(160deg, var(--accent-soft), var(--surface) 70%); gap: 6px; }
+.hero-val { font-size: clamp(1.9rem, 2.9vw, 3rem); font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero-val.neg { color: var(--exp); }
+.tile-val { font-size: clamp(1.1rem, 1.55vw, 1.45rem); font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .sub { font-size: 0.8rem; color: var(--muted); }
+.label .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.delta { font-size: 0.82rem; font-weight: 600; }
+.delta.good { color: var(--inc); } .delta.bad { color: var(--exp); } .delta.flat { color: var(--muted); font-weight: 500; }
+.fg { color: var(--fg); }
+.meter { height: 8px; border-radius: 4px; background: var(--accent-soft); overflow: hidden; margin-top: 4px; }
+.meter > div { height: 100%; background: var(--accent); border-radius: 4px; }
+.spark { width: 100%; max-width: 160px; height: 32px; margin-top: 4px; }
+.spark polyline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+@media (max-width: 1100px) { .dash-top { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hero { grid-column: 1 / -1; } }
+@media (max-width: 520px) { .dash-top { gap: 10px; } .tile { padding: 12px 14px; } .tile-val { font-size: 1.15rem; } .dash-top .tile:last-child { grid-column: 1 / -1; } }
+.grid2.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1000px) { .grid2.even { grid-template-columns: minmax(0, 1fr); } }
+
+.chart .ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot { stroke: var(--surface); stroke-width: 2; }
+.chart .hit { fill: transparent; cursor: crosshair; outline: none; }
+.chart .col-group { transition: opacity .15s; }
+.chart .col-group.dim { opacity: 0.35; }
+.chart .hit:hover, .chart .hit:focus-visible { fill: var(--accent); fill-opacity: 0.06; }
+.chart .xhair line { stroke: var(--muted); stroke-width: 1; opacity: 0; }
+.chart .xhair:hover line { opacity: 1; }
+.chart .xhair .hit:hover { fill-opacity: 0; }
+.chart .end-label { fill: var(--muted); font: 11px var(--font); }
+.legend { align-items: center; flex-wrap: wrap; }
+.legend .lkey { height: 2px; width: 14px; border-radius: 1px; vertical-align: 3px; }
+.share { color: var(--muted); font-size: 0.8rem; margin-right: 6px; }
+
+.tip { position: fixed; z-index: 50; pointer-events: none; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, .14); font-size: 0.82rem; min-width: 150px; display: grid; gap: 3px; }
+.tip-title { color: var(--muted); font-size: 0.75rem; }
+.tip-row { display: grid; grid-template-columns: 12px auto 1fr; gap: 6px; align-items: center; }
+.tip-row i { height: 2px; border-radius: 1px; }
+.tip-row b { font-weight: 600; }
+.tip-row span { color: var(--muted); }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+table.data th { text-align: left; font-weight: 500; color: var(--muted); font-size: 0.78rem; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.data td { padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+table.data .r { text-align: right; }
+
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.stat { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.stat dt { font-size: 0.75rem; color: var(--muted); }
+.stat dd { margin: 2px 0 0; display: grid; gap: 1px; min-width: 0; }
+.stat dd b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat dd small { font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1280px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .stat dd small, .stat dd b { white-space: normal; } }

@@ -3,11 +3,12 @@
 import * as vault from "./vault.js";
 import { fmt, fmt0, MONTHS, MONTHS_LONG, RATES, todayIso, dmy, esc, parseBetrag, vatOf, nettoOf, uid, plural, debounce, daysBetween } from "./util.js";
 import { KAT, konto, bereichOf, defaultKat } from "./categories.js";
-import { train, learnedCount } from "./learn.js";
+import { train, learnedCount, merchantKey } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
-import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer, isAnlage } from "./savings.js";
+import { columnChart, lineChart, sparkline, bindTooltips } from "./charts.js";
+import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer, isAnlage, FIX_KAT } from "./savings.js";
 
 const $ = (id) => document.getElementById(id);
 const PERIOD_SIZE = { monat: 1, quartal: 3, semester: 6, jahr: 12 };
@@ -153,6 +154,32 @@ async function lockNow() {
 }
 $("btn-lock").addEventListener("click", lockNow);
 
+// ---------- light / dark ----------
+const THEMES = { auto: "Automatisch", light: "Hell", dark: "Dunkel" };
+const THEME_ICON = {
+  auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
+};
+function applyTheme(t) {
+  if (!THEMES[t]) t = "auto";
+  prefs.theme = t; savePrefs();
+  if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", t);
+  // the browser bar follows the page
+  const dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.setAttribute("content", dark ? "#111916" : "#eef2f0"); m.removeAttribute("media"); });
+  const b = $("btn-theme");
+  b.querySelector(".t-ico").innerHTML = THEME_ICON[t];
+  b.querySelector(".t-label").textContent = THEMES[t];
+  const next = { auto: "light", light: "dark", dark: "auto" }[t];
+  b.title = `Darstellung: ${THEMES[t]}. Klicken für ${THEMES[next]}.`;
+  b.setAttribute("aria-label", b.title);
+  if (state.data && state.view === "einstellungen") renderSettings();
+}
+$("btn-theme").addEventListener("click", () => applyTheme({ auto: "light", light: "dark", dark: "auto" }[prefs.theme || "auto"]));
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { if ((prefs.theme || "auto") === "auto") applyTheme("auto"); });
+applyTheme(prefs.theme || "auto");
+
 // lock automatically after a period without activity
 let lastActive = Date.now();
 const touch = () => { lastActive = Date.now(); };
@@ -170,8 +197,8 @@ document.addEventListener("visibilitychange", () => {
 addEventListener("pagehide", () => { if (state.data) vault.saveData(state.data); });
 
 // ---------- periods and aggregation ----------
-function range() {
-  const { mode, year, idx } = state.period;
+function range() { const { mode, year, idx } = state.period; return rangeOf(mode, year, idx); }
+function rangeOf(mode, year, idx) {
   const size = PERIOD_SIZE[mode], m0 = idx * size;
   const label = mode === "jahr" ? String(year) : mode === "semester" ? `${idx + 1}. Semester ${year}`
     : mode === "quartal" ? `Q${idx + 1} ${year}` : `${MONTHS_LONG[idx]} ${year}`;
@@ -257,12 +284,15 @@ function setHandlers(click, change = () => {}, input = () => {}) { pageClick = c
 // Übersicht
 // =====================================================================
 function renderOverview() {
-  const r = range(), modus = mwstModus(), biz = state.bereich === "geschaeft";
+  const r = range(), pr = prevRange(), modus = mwstModus(), biz = state.bereich === "geschaeft";
   const brutto = !biz || modus !== "effektiv";
   const all = visibleTx().filter((t) => !isTransfer(t)), inP = all.filter((t) => inRange(t, r)), s = sums(inP);
+  const prevP = all.filter((t) => inRange(t, pr)), ps = sums(prevP);
   const net = (f) => visibleTx().filter((t) => f(t) && inRange(t, r)).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
   const moved = net((t) => isTransfer(t) && !isAnlage(t)), invested = net(isAnlage);
   const inc = brutto ? s.incB : s.incN, exp = brutto ? s.expB : s.expN, profit = inc - exp;
+  const pInc = brutto ? ps.incB : ps.incN, pExp = brutto ? ps.expB : ps.expN, pProfit = pInc - pExp;
+  const val = (t) => (brutto ? t.betragCent : nettoOf(t));
   const count = (typ) => plural(inP.filter((t) => t.typ === typ).length, "Buchung", "Buchungen");
 
   let k4 = { label: "MWST-Schuld", val: fmt(s.vatOut - s.vatIn), cls: s.vatOut - s.vatIn > 0 ? "exp" : "inc", sub: `Umsatzsteuer ${fmt0(s.vatOut)} − Vorsteuer ${fmt0(s.vatIn)}` };
@@ -271,22 +301,32 @@ function renderOverview() {
     const detail = lohn.filter((t) => t.lohn?.bruttolohn);
     const gross = detail.reduce((a, t) => a + t.lohn.bruttolohn, 0);
     const ded = detail.reduce((a, t) => a + t.lohn.bruttolohn - (t.lohn.nettolohn || t.betragCent), 0);
-    k4 = { label: "Lohn ausbezahlt", val: fmt(lohn.reduce((a, t) => a + t.betragCent, 0)), cls: "inc",
+    k4 = { label: "Lohn ausbezahlt", val: fmt(lohn.reduce((a, t) => a + t.betragCent, 0)), cls: "",
       sub: !lohn.length ? "Lohnabrechnung unter „Erfassen“ einlesen" : gross ? `brutto ${fmt0(gross)} · Abzüge ${fmt0(ded)}` : plural(lohn.length, "Lohnzahlung", "Lohnzahlungen") };
   } else if (modus === "keine") {
     const y = sums(all.filter((t) => t.datum.startsWith(String(state.period.year))));
     k4 = { label: "Umsatz im Jahr", val: fmt0(y.incB), cls: "", sub: `MWST-pflichtig ab ${fmt0(MWST_LIMIT)} · ${Math.round((y.incB / MWST_LIMIT) * 100)} % erreicht` };
   } else if (modus === "saldo") {
     const rate = Number(state.data.settings.saldoSatz) || 0;
-    k4 = rate ? { label: "MWST-Schuld", val: fmt(Math.round(s.incB * rate / 100)), cls: "exp", sub: `${rate} % Saldosteuersatz auf ${fmt0(s.incB)} Umsatz` }
+    k4 = rate ? { label: "MWST-Schuld", val: fmt(Math.round(s.incB * rate / 100)), cls: "", sub: `${rate} % Saldosteuersatz auf ${fmt0(s.incB)} Umsatz` }
       : { label: "MWST-Schuld", val: "–", cls: "", sub: "Saldosteuersatz in den Einstellungen eintragen" };
   }
+
+  // the last twelve months up to the end of the chosen period, for the sparklines
+  const endYm = r.to.slice(0, 7);
+  const last12 = Array.from({ length: 12 }, (_, i) => addYm(endYm, i - 11)).map((ym) => {
+    const m = sums(all.filter((t) => t.datum.startsWith(ym)));
+    const mi = brutto ? m.incB : m.incN, me = brutto ? m.expB : m.expN;
+    return { inc: mi, exp: me, bal: mi - me };
+  });
 
   const open = all.filter((t) => t.typ === "einnahme" && t.status === "offen");
   const late = open.filter((t) => daysBetween(t.datum, todayIso()) > ZAHLUNGSFRIST);
   const lastBackup = state.data.settings.lastBackup;
   const needBackup = Object.keys(state.data.tx).length && (!lastBackup || daysBetween(lastBackup, todayIso()) > 30);
   const empty = !Object.keys(state.data.tx).length;
+  const word = biz ? "Gewinn" : "Saldo";
+  const quote = inc > 0 ? Math.round((profit / inc) * 100) : null;
 
   $("view").innerHTML = `
     <div class="pagehead"><h1>Übersicht</h1>${controlsHtml()}</div>
@@ -298,27 +338,136 @@ function renderOverview() {
         <div><b>2. Feste Zahlungen anlegen</b><span class="small muted">Miete, Krankenkasse, Abos: einmal eintragen, die App bucht sie jeden Monat selbst.</span><button class="btn ghost sm" data-act="goto" data-v="wiederkehrend">Wiederkehrend</button></div>
         <div><b>3. Sicherung einrichten</b><span class="small muted">Eine verschlüsselte Sicherungsdatei schützt vor Datenverlust.</span><button class="btn ghost sm" data-act="goto" data-v="einstellungen">Einstellungen</button></div>
       </div></section>` : ""}
-    <section class="kpis" aria-label="Kennzahlen">
-      <div class="kpi"><span class="label">Einnahmen</span><span class="val inc">${fmt(inc)}</span><span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span></div>
-      <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt(exp)}</span><span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span></div>
-      <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}${moved > 0 ? ` · davon ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}${invested > 0 ? ` · ${fmt0(invested)} angelegt` : invested < 0 ? ` · ${fmt0(-invested)} aus Anlagen` : ""}</span></div>
-      <div class="kpi"><span class="label">${k4.label}</span><span class="val ${k4.cls}">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
-    </section>
     ${!empty && !inP.length ? elsewhereHtml() : ""}
+    <section class="dash-top" aria-label="Kennzahlen ${esc(r.label)}">
+      <div class="hero">
+        <span class="label">${word} ${esc(r.label)}</span>
+        <span class="hero-val ${profit < 0 ? "neg" : ""}">${fmt(profit)}</span>
+        ${deltaHtml(profit, pProfit, true, pr.label)}
+        ${quote != null ? `<div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, quote)}" aria-label="${biz ? "Marge" : "Sparquote"}"><div style="width:${Math.max(0, Math.min(100, quote))}%"></div></div>
+          <span class="small muted">${biz ? "Marge" : "Sparquote"} <b class="fg">${quote} %</b> der Einnahmen${moved > 0 ? ` · ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}${invested > 0 ? ` · ${fmt0(invested)} angelegt` : invested < 0 ? ` · ${fmt0(-invested)} aus Anlagen` : ""}</span>` : `<span class="small muted">noch keine Einnahmen in ${esc(r.label)}</span>`}
+      </div>
+      <div class="tile"><span class="label"><i class="key" style="background:var(--c-inc)"></i>Einnahmen</span><span class="tile-val">${fmt(inc)}</span>${deltaHtml(inc, pInc, true, pr.label)}<span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span>${sparkline(last12.map((m) => m.inc))}</div>
+      <div class="tile"><span class="label"><i class="key" style="background:var(--c-exp)"></i>Ausgaben</span><span class="tile-val">${fmt(exp)}</span>${deltaHtml(exp, pExp, false, pr.label)}<span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span>${sparkline(last12.map((m) => m.exp))}</div>
+      <div class="tile"><span class="label">${k4.label}</span><span class="tile-val">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
+    </section>
     ${goalStrip()}
     ${open.length ? `<div class="alert"><span><strong>${plural(open.length, "offene Rechnung", "offene Rechnungen")}</strong> über ${fmt(open.reduce((a, t) => a + t.betragCent, 0))}</span>${late.length ? `<span>${late.length} davon über ${ZAHLUNGSFRIST} Tage alt</span>` : ""}<button class="btn ghost sm" data-act="show-open">Anzeigen</button></div>` : ""}
     ${needBackup ? `<div class="alert"><span><strong>Sicherung empfohlen:</strong> ${lastBackup ? `letzte Sicherung am ${dmy(lastBackup)}` : "noch keine Sicherung erstellt"}.</span><button class="btn ghost sm" data-act="goto" data-v="einstellungen">Jetzt sichern</button></div>` : ""}
     <div class="grid2">
-      <section class="panel"><div class="panel-head"><h2>Monatsverlauf ${state.period.year}</h2>
-        <div class="legend"><span><i style="background:var(--inc)"></i>Einnahmen</span><span><i style="background:var(--exp)"></i>Ausgaben</span><span><i style="background:var(--accent)"></i>${biz ? "Gewinn" : "Saldo"}</span></div></div>
-        <div class="chart">${chartSvg(all, brutto, biz ? "Gewinn" : "Saldo")}</div></section>
-      <section class="panel"><div class="panel-head"><h2>Ausgaben nach Kategorie</h2><span class="muted small">${Object.keys(state.data.settings.budgets || {}).length ? (r.months === 1 ? "Budget pro Monat" : `Budget × ${r.months} Monate`) : ""}</span></div>
+      ${monthPanel(all, brutto, word)}
+      <section class="panel"><div class="panel-head"><h2>Ausgaben nach Kategorie</h2><span class="muted small">${Object.keys(state.data.settings.budgets || {}).length ? (r.months === 1 ? "Budget pro Monat" : `Budget × ${r.months} Monate`) : esc(r.label)}</span></div>
         <div class="cats">${catsHtml(inP, r, brutto)}</div></section>
+    </div>
+    <div class="grid2 even">
+      ${cumulativePanel(all, r, pr, val)}
+      ${statsPanel(inP, r, val, exp, inc, profit)}
     </div>`;
-  setHandlers((act) => {
+  bindTooltips($("view"));
+  setHandlers((act, b) => {
     if (act === "show-open") { state.filter = "offen"; route("buchungen"); }
+    else if (act === "table") {
+      const t = $(b.dataset.v), on = t.hidden;
+      t.hidden = !on; b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "Diagramm" : "Tabelle";
+      t.previousElementSibling.hidden = on;
+    }
   });
   state.notice = "";
+}
+
+function prevRange() {
+  const { mode, year, idx } = state.period, count = 12 / PERIOD_SIZE[mode];
+  return idx > 0 ? rangeOf(mode, year, idx - 1) : rangeOf(mode, year - 1, count - 1);
+}
+
+// change against the previous period: arrow, sign and words carry it, the colour only repeats it
+function deltaHtml(cur, prev, upIsGood, prevLabel) {
+  if (!prev || !cur) return `<span class="delta flat">${prev ? `${esc(prevLabel)}: ${fmt0(prev)}` : "kein Vergleich"}</span>`;
+  const pct = Math.round(((cur - prev) / Math.abs(prev)) * 100);
+  if (!pct) return `<span class="delta flat">gleich wie ${esc(prevLabel)}</span>`;
+  const good = (pct > 0) === upIsGood;
+  return `<span class="delta ${good ? "good" : "bad"}"><span aria-hidden="true">${pct > 0 ? "▲" : "▼"}</span> ${pct > 0 ? "+" : "−"}${Math.abs(pct)} % vs ${esc(prevLabel)}</span>`;
+}
+
+function monthPanel(all, brutto, word) {
+  const y = state.period.year, { mode, idx } = state.period;
+  const months = Array.from({ length: 12 }, (_, i) => {
+    const ym = `${y}-${String(i + 1).padStart(2, "0")}`, m = sums(all.filter((t) => t.datum.startsWith(ym)));
+    const inc = brutto ? m.incB : m.incN, exp = brutto ? m.expB : m.expN;
+    return { label: MONTHS[i], title: `${MONTHS_LONG[i]} ${y}`, values: { inc, exp, bal: inc || exp ? inc - exp : null }, dim: Math.floor(i / PERIOD_SIZE[mode]) !== idx };
+  });
+  const series = [{ key: "inc", label: "Einnahmen", color: "var(--c-inc)" }, { key: "exp", label: "Ausgaben", color: "var(--c-exp)" }];
+  const line = { key: "bal", label: word, color: "var(--c-bal)" };
+  const table = `<table class="data"><thead><tr><th>Monat</th><th class="r">Einnahmen</th><th class="r">Ausgaben</th><th class="r">${word}</th></tr></thead><tbody>
+    ${months.map((m) => `<tr><td>${m.title}</td><td class="r num">${fmt(m.values.inc)}</td><td class="r num">${fmt(m.values.exp)}</td><td class="r num">${m.values.bal == null ? "–" : fmt(m.values.bal)}</td></tr>`).join("")}</tbody></table>`;
+  return `<section class="panel"><div class="panel-head"><h2>Monatsverlauf ${y}</h2>
+      <div class="legend"><span><i style="background:var(--c-inc)"></i>Einnahmen</span><span><i style="background:var(--c-exp)"></i>Ausgaben</span><span><i class="lkey" style="background:var(--c-bal)"></i>${word}</span>
+      <button class="btn quiet sm" data-act="table" data-v="t-month" aria-pressed="false">Tabelle</button></div></div>
+      <div class="chart">${columnChart({ groups: months, series, line, fmt, ariaLabel: `Einnahmen, Ausgaben und ${word} pro Monat ${y}` })}</div>
+      <div class="table-wrap" id="t-month" hidden>${table}</div></section>`;
+}
+
+// spending added up day by day, this period against the one before
+function cumulativePanel(all, r, pr, val) {
+  const today = todayIso(), days = [];
+  for (let d = r.from; d <= r.to; d = addDays(d, 1)) { if (!isRealDate(d)) continue; days.push(d); }
+  const pdays = [];
+  for (let d = pr.from; d <= pr.to; d = addDays(d, 1)) { if (!isRealDate(d)) continue; pdays.push(d); }
+  const step = days.length > 92 ? 7 : 1;
+  const run = (list, dates, stopAt) => {
+    const by = new Map(); for (const t of list) if (t.typ === "ausgabe") by.set(t.datum, (by.get(t.datum) || 0) + val(t));
+    let acc = 0; const out = [];
+    dates.forEach((d, i) => { acc += by.get(d) || 0; if (i % step === step - 1 || i === dates.length - 1) out.push(stopAt && d > stopAt ? null : acc); });
+    return out;
+  };
+  const cur = run(all.filter((t) => inRange(t, r)), days, today), prev = run(all.filter((t) => inRange(t, pr)), pdays);
+  const n = Math.max(cur.length, prev.length);
+  const xs = Array.from({ length: n }, (_, i) => { const d = days[Math.min(days.length - 1, (i + 1) * step - 1)]; return d ? dmy(d).slice(0, 6) : ""; });
+  const ticks = [0, Math.round((n - 1) / 3), Math.round((2 * (n - 1)) / 3), n - 1].filter((v, i, a) => a.indexOf(v) === i);
+  const lastCur = [...cur].reverse().find((v) => v != null) || 0;
+  const idxNow = cur.findIndex((v) => v == null); const at = idxNow < 0 ? cur.length - 1 : idxNow - 1;
+  const prevAt = prev[Math.min(prev.length - 1, Math.max(0, at))] || 0;
+  if (!lastCur && !prev.some(Boolean)) return `<section class="panel"><h2>Ausgaben aufsummiert</h2><p class="muted">Keine Ausgaben in ${esc(r.label)} und ${esc(pr.label)}.</p></section>`;
+  const diff = lastCur - prevAt;
+  return `<section class="panel"><div class="panel-head"><h2>Ausgaben aufsummiert</h2>
+      <div class="legend"><span><i class="lkey" style="background:var(--c-exp)"></i>${esc(r.label)}</span><span><i class="lkey" style="background:var(--c-ctx)"></i>${esc(pr.label)}</span></div></div>
+      <div class="chart">${lineChart({ xs, ticks, fmt, ariaLabel: `Ausgaben aufsummiert ${r.label} im Vergleich zu ${pr.label}`,
+        series: [{ key: "prev", label: pr.label, color: "var(--c-ctx)", values: prev, context: true }, { key: "cur", label: r.label, color: "var(--c-exp)", values: cur }] })}</div>
+      <p class="small">${prevAt ? `Bis jetzt <b>${fmt0(lastCur)}</b> ausgegeben, ${diff > 0 ? `<b class="exp">${fmt0(diff)} mehr</b>` : diff < 0 ? `<b class="inc">${fmt0(-diff)} weniger</b>` : "gleich viel"} als zum gleichen Zeitpunkt in ${esc(pr.label)}.` : `Bis jetzt <b>${fmt0(lastCur)}</b> ausgegeben.`}</p>
+    </section>`;
+}
+const addDays = (iso, n) => { const d = new Date(iso.slice(0, 7) + "-01T12:00:00"); d.setDate(+iso.slice(8, 10) + n); return d.toISOString().slice(0, 10); };
+const isRealDate = (iso) => { const d = new Date(iso + "T12:00:00"); return !isNaN(d) && d.toISOString().slice(0, 10) === iso; };
+
+function statsPanel(inP, r, val, exp, inc, profit) {
+  const spend = inP.filter((t) => t.typ === "ausgabe");
+  const today = todayIso(), end = r.to < today ? r.to : today;
+  const daysSoFar = r.from > today ? 0 : Math.max(1, daysBetween(r.from, end) + 1);
+  const biggest = spend.reduce((a, t) => (!a || val(t) > val(a) ? t : a), null);
+  const byM = new Map();
+  for (const t of spend) {
+    const k = merchantKey(t.partner || t.notiz || "") || t.kategorie;
+    const e = byM.get(k) || { name: t.partner || t.notiz || t.kategorie, n: 0, sum: 0 }; e.n++; e.sum += val(t); byM.set(k, e);
+  }
+  const often = [...byM.values()].sort((a, b) => b.n - a.n || b.sum - a.sum)[0];
+  const fix = spend.filter((t) => FIX_KAT.has(t.kategorie)).reduce((a, t) => a + val(t), 0);
+  const wd = [0, 0, 0, 0, 0, 0, 0];
+  for (const t of spend) wd[(new Date(t.datum + "T12:00:00").getDay() + 6) % 7] += val(t);
+  const WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"], WDL = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+  const topWd = wd.indexOf(Math.max(...wd));
+  const stat = (label, value, sub = "") => `<div class="stat"><dt>${label}</dt><dd><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</dd></div>`;
+  return `<section class="panel"><div class="panel-head"><h2>Statistik</h2><span class="muted small">${esc(r.label)}</span></div>
+      <dl class="stats">
+        ${stat("Ø Ausgaben pro Tag", daysSoFar ? fmt(Math.round(exp / daysSoFar)) : "–", daysSoFar ? plural(daysSoFar, "Tag", "Tage") : "")}
+        ${stat("Grösste Ausgabe", biggest ? fmt(val(biggest)) : "–", biggest ? `${esc((biggest.partner || biggest.notiz || biggest.kategorie).slice(0, 40))} · ${dmy(biggest.datum)}` : "")}
+        ${stat("Am häufigsten", often ? esc(often.name.slice(0, 28)) : "–", often ? `${plural(often.n, "Zahlung", "Zahlungen")} · ${fmt0(often.sum)}` : "")}
+        ${stat("Fixkosten", exp ? `${Math.round((fix / exp) * 100)} %` : "–", exp ? `${fmt0(fix)} der Ausgaben` : "")}
+        ${stat("Buchungen", String(inP.length), `${inP.filter((t) => t.typ === "einnahme").length} Einnahmen · ${spend.length} Ausgaben`)}
+        ${stat("Teuerster Wochentag", spend.length ? WDL[topWd] : "–", spend.length ? fmt0(wd[topWd]) : "")}
+      </dl>
+      ${spend.length ? `<h3>Ausgaben nach Wochentag</h3><div class="chart">${columnChart({ height: 170, fmt, ariaLabel: "Ausgaben nach Wochentag",
+        groups: WD.map((d, i) => ({ label: d, title: WDL[i], values: { exp: wd[i] } })), series: [{ key: "exp", label: "Ausgaben", color: "var(--c-exp)" }] })}</div>` : ""}
+    </section>`;
 }
 
 // whether investments (E-Trading) count towards the savings goal
@@ -342,36 +491,6 @@ function niceMax(v) {
   for (const m of [1, 2, 2.5, 5, 10]) if (m * e >= raw) return m * e * 4;
   return 40 * e;
 }
-function chartSvg(all, brutto, word) {
-  const y = state.period.year;
-  const months = Array.from({ length: 12 }, () => ({ inc: 0, exp: 0 }));
-  for (const t of all) {
-    if (!t.datum.startsWith(y + "-")) continue;
-    const m = +t.datum.slice(5, 7) - 1, v = brutto ? t.betragCent : nettoOf(t);
-    if (t.typ === "einnahme") months[m].inc += v; else months[m].exp += v;
-  }
-  const max = niceMax(Math.max(...months.map((m) => Math.max(m.inc, m.exp))));
-  const W = 640, H = 240, L = 50, R = 8, T = 10, B = 26, cw = (W - L - R) / 12, bw = Math.min(16, cw * 0.32);
-  const ys = (v) => T + (H - T - B) * (1 - v / max);
-  const { mode, idx } = state.period;
-  const axis = (cent) => { const e = cent / 100; return e >= 1000 ? (e / 1000).toLocaleString("de-CH", { maximumFractionDigits: 1 }) + "k" : String(Math.round(e)); };
-  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Einnahmen und Ausgaben pro Monat ${y}">`;
-  for (let i = 0; i <= 4; i++) {
-    const v = (max / 4) * i, yy = ys(v);
-    svg += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}"/><text class="axis" x="${L - 8}" y="${yy + 4}" text-anchor="end">${axis(v)}</text>`;
-  }
-  const pts = [];
-  months.forEach((m, i) => {
-    const cx = L + cw * i + cw / 2, dim = Math.floor(i / PERIOD_SIZE[mode]) === idx ? "" : " dim";
-    svg += `<rect class="b-inc${dim}" x="${cx - bw - 1}" y="${ys(m.inc)}" width="${bw}" height="${Math.max(0, H - B - ys(m.inc))}" rx="2"><title>${MONTHS_LONG[i]}: Einnahmen ${fmt(m.inc)}</title></rect>`;
-    svg += `<rect class="b-exp${dim}" x="${cx + 1}" y="${ys(m.exp)}" width="${bw}" height="${Math.max(0, H - B - ys(m.exp))}" rx="2"><title>${MONTHS_LONG[i]}: Ausgaben ${fmt(m.exp)}</title></rect>`;
-    svg += `<text class="axis" x="${cx}" y="${H - 8}" text-anchor="middle">${MONTHS[i]}</text>`;
-    if (m.inc || m.exp) pts.push([cx, ys(Math.max(0, m.inc - m.exp)), m.inc - m.exp, i]);
-  });
-  if (pts.length > 1) svg += `<polyline class="profit" points="${pts.map((p) => p[0] + "," + p[1]).join(" ")}"/>`;
-  pts.forEach((p) => { svg += `<circle class="profit-dot" cx="${p[0]}" cy="${p[1]}" r="3"><title>${MONTHS_LONG[p[3]]}: ${word} ${fmt(p[2])}</title></circle>`; });
-  return svg + "</svg>";
-}
 function catsHtml(inP, r, brutto) {
   const by = new Map();
   for (const t of inP) if (t.typ === "ausgabe") by.set(t.kategorie, (by.get(t.kategorie) || 0) + (brutto ? t.betragCent : nettoOf(t)));
@@ -379,7 +498,7 @@ function catsHtml(inP, r, brutto) {
   for (const k of Object.keys(budgets)) if (!by.has(k)) by.set(k, 0);
   const rows = [...by.entries()].sort((a, b) => b[1] - a[1]);
   if (!rows.length) return `<p class="muted">Keine Ausgaben in ${esc(r.label)}.</p>`;
-  const top = Math.max(...rows.map((x) => x[1]));
+  const top = Math.max(...rows.map((x) => x[1])), total = rows.reduce((a, x) => a + x[1], 0);
   return rows.map(([k, v]) => {
     const b = budgets[k] ? budgets[k] * r.months : 0;
     let cls = "", hint = "", width = top ? (v / top) * 100 : 0;
@@ -388,7 +507,8 @@ function catsHtml(inP, r, brutto) {
       cls = pct > 1 ? "over" : pct > 0.85 ? "near" : "ok";
       hint = pct > 1 ? `<div class="hint over">${fmt(v - b)} über Budget (${fmt0(b)})</div>` : `<div class="hint">${Math.round(pct * 100)} % von ${fmt0(b)} · noch ${fmt(b - v)} frei</div>`;
     }
-    return `<div class="cat"><div class="cat-top"><span>${esc(k)}</span><span class="num">${fmt(v)}</span></div><div class="bar ${cls}"><div style="width:${width.toFixed(1)}%"></div></div>${hint}</div>`;
+    const share = total ? Math.round((v / total) * 100) : 0;
+    return `<div class="cat"><div class="cat-top"><span>${esc(k)}</span><span><span class="share">${share} %</span> <span class="num">${fmt(v)}</span></span></div><div class="bar ${cls}"><div style="width:${width.toFixed(1)}%"></div></div>${hint}</div>`;
   }).join("");
 }
 
@@ -1213,6 +1333,10 @@ function renderSettings() {
   $("view").innerHTML = `
     <div class="pagehead"><h1>Einstellungen</h1></div>
     <div class="settings">
+      <section class="panel"><h2>Darstellung</h2>
+        <div class="seg" role="group" aria-label="Darstellung">${Object.entries(THEMES).map(([k, v]) => `<button type="button" data-act="theme" data-v="${k}" aria-pressed="${(prefs.theme || "auto") === k}">${v}</button>`).join("")}</div>
+        <p class="small muted">Automatisch folgt der Einstellung deines Computers bzw. iPhones. Umschalten geht auch jederzeit mit dem Knopf ${matchMedia("(max-width: 860px)").matches ? "oben rechts" : "unten in der Seitenleiste"}.</p>
+      </section>
       <section class="panel"><h2>Über dich</h2>
         <div class="set-grid">
           <div class="field"><label for="s-firma">Dein Name oder Firmenname</label><input type="text" id="s-firma" value="${esc(s.firma)}"><span class="hint">Hilft der KI zu erkennen, ob eine Rechnung von dir stammt (Einnahme).</span></div>
@@ -1278,7 +1402,8 @@ function renderSettings() {
   }).catch(() => {});
   $("pw-form").addEventListener("submit", changePw);
   setHandlers(async (act, b) => {
-    if (act === "budget-add") {
+    if (act === "theme") applyTheme(b.dataset.v);
+    else if (act === "budget-add") {
       const k = $("s-bkat").value.trim(), v = parseBetrag($("s-bbetrag").value);
       if (!k || !v || v <= 0) return toast("Bitte Kategorie und Betrag angeben.");
       const had = (s.budgets || {})[k] != null;
