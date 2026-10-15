@@ -422,7 +422,13 @@ const OWN_TRANSFER = /(übertrag|uebertrag|kontoübertrag|kontouebertrag|umbuchu
 const digitsOnly = (s) => String(s).replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 // "anlage", "spar" or null. An own account in the settings is an investment account when its line
 // says so ("E-Trading CH56 …").
+// Loading or paying the credit card moves money, it is not spending: the purchases themselves
+// come with the credit card statement.
+export const KARTE_RE = /(kreditkart|ladung\s+(der\s+)?karte|karten-?ladung|prepaid-?karte|viseca|swisscard|cornercard|cembra|bonus\s*card|visa\s+card\s+services)/i;
+// fees and interest of the card are real costs
+export const isCardTopup = (text) => KARTE_RE.test(String(text || "")) && !/(gebühr|gebuehr|jahresbeitrag|zins|spesen)/i.test(String(text || ""));
 export function ownTransfer(text, ownAccounts = []) {
+  if (isCardTopup(text)) return "karte";
   const flat = digitsOnly(text);
   const acc = ownAccounts.find((a) => { const k = digitsOnly(a).replace(/^[A-Z-]*(?=[A-Z]{2}\d)/, ""); return k.length >= 6 && flat.includes(k.length > 12 ? k.slice(-12) : k); });
   if (acc) return ANLAGE_RE.test(acc) || ANLAGE_RE.test(text) ? "anlage" : "spar";
@@ -430,6 +436,7 @@ export function ownTransfer(text, ownAccounts = []) {
   return ANLAGE_RE.test(text) ? "anlage" : "spar";
 }
 export const TRANSFER_KAT = {
+  karte: { ausgabe: "Kreditkarte (Übertrag)", einnahme: "Kreditkarte (Übertrag)" },
   spar: { ausgabe: "Sparkonto", einnahme: "Entnahme Sparkonto" },
   anlage: { ausgabe: "Anlagen (E-Trading)", einnahme: "Entnahme Anlagen" },
 };

@@ -5,10 +5,11 @@ import { fmt, fmt0, MONTHS, MONTHS_LONG, RATES, todayIso, dmy, esc, parseBetrag,
 import { KAT, konto, bereichOf, defaultKat } from "./categories.js";
 import { train, learnedCount, merchantKey, merchantName } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
+import { isCardTopup } from "./parse.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
 import { columnChart, lineChart, sparkline, bindTooltips } from "./charts.js";
-import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer, isAnlage, FIX_KAT } from "./savings.js";
+import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer, isAnlage, isKarte, FIX_KAT } from "./savings.js";
 
 const $ = (id) => document.getElementById(id);
 const PERIOD_SIZE = { monat: 1, quartal: 3, semester: 6, jahr: 12 };
@@ -289,7 +290,9 @@ function renderOverview() {
   const all = visibleTx().filter((t) => !isTransfer(t)), inP = all.filter((t) => inRange(t, r)), s = sums(inP);
   const prevP = all.filter((t) => inRange(t, pr)), ps = sums(prevP);
   const net = (f) => visibleTx().filter((t) => f(t) && inRange(t, r)).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
-  const moved = net((t) => isTransfer(t) && !isAnlage(t)), invested = net(isAnlage);
+  const moved = net((t) => isTransfer(t) && !isAnlage(t) && !isKarte(t)), invested = net(isAnlage), card = net(isKarte);
+  // credit card top-ups booked as spending before this version
+  const cardTodo = Object.entries(state.data.tx).filter(([, t]) => !isTransfer(t) && isCardTopup(`${t.partner || ""} ${t.notiz || ""} ${t.kategorie || ""}`));
   const inc = brutto ? s.incB : s.incN, exp = brutto ? s.expB : s.expN, profit = inc - exp;
   const pInc = brutto ? ps.incB : ps.incN, pExp = brutto ? ps.expB : ps.expN, pProfit = pInc - pExp;
   const val = (t) => (brutto ? t.betragCent : nettoOf(t));
@@ -351,6 +354,8 @@ function renderOverview() {
       <div class="tile link" data-act="drill" data-v="exp" role="button" tabindex="0" aria-label="Ausgaben ${esc(r.label)}: Buchungen anzeigen"><span class="label"><i class="key" style="background:var(--c-exp)"></i>Ausgaben</span><span class="tile-val">${fmt(exp)}</span>${deltaHtml(exp, pExp, false, pr.label)}<span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span>${sparkline(last12.map((m) => m.exp))}</div>
       <div class="tile"><span class="label">${k4.label}</span><span class="tile-val">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
+    ${cardTodo.length ? `<div class="alert"><span><strong>${plural(cardTodo.length, "Kreditkarten-Aufladung", "Kreditkarten-Aufladungen")}</strong> (${fmt0(cardTodo.reduce((a, [, t]) => a + t.betragCent, 0))}) ${cardTodo.length === 1 ? "ist" : "sind"} noch als Ausgabe gebucht. Als Übertrag zählen sie nicht doppelt, wenn du die Kreditkartenabrechnung einliest.</span><button class="btn ghost sm" data-act="card-fix">Als Übertrag umbuchen</button></div>` : ""}
+    ${card > 0 ? `<div class="alert info"><span><strong>${fmt0(card)} auf die Kreditkarte geladen</strong> in ${esc(r.label)}. Das zählt nicht als Ausgabe. Lies die Kreditkartenabrechnung unter „Erfassen“ ein, damit die Einkäufe damit erscheinen.</span><button class="btn ghost sm" data-act="goto" data-v="erfassen">Abrechnung einlesen</button></div>` : ""}
     ${goalStrip()}
     ${open.length ? `<div class="alert"><span><strong>${plural(open.length, "offene Rechnung", "offene Rechnungen")}</strong> über ${fmt(open.reduce((a, t) => a + t.betragCent, 0))}</span>${late.length ? `<span>${late.length} davon über ${ZAHLUNGSFRIST} Tage alt</span>` : ""}<button class="btn ghost sm" data-act="show-open">Anzeigen</button></div>` : ""}
     ${needBackup ? `<div class="alert"><span><strong>Sicherung empfohlen:</strong> ${lastBackup ? `letzte Sicherung am ${dmy(lastBackup)}` : "noch keine Sicherung erstellt"}.</span><button class="btn ghost sm" data-act="goto" data-v="einstellungen">Jetzt sichern</button></div>` : ""}
@@ -367,6 +372,10 @@ function renderOverview() {
   setHandlers((act, b) => {
     if (act === "show-open") { state.filter = "offen"; route("buchungen"); }
     else if (act === "drill") openDrill(b.dataset.v);
+    else if (act === "card-fix") {
+      for (const [, t] of cardTodo) { t.kategorie = "Kreditkarte (Übertrag)"; t.bereich = "privat"; }
+      save(); toast(`${plural(cardTodo.length, "Buchung", "Buchungen")} als Kreditkarten-Übertrag umgebucht.`); render();
+    }
     else if (act === "table") {
       const t = $(b.dataset.v), on = t.hidden;
       t.hidden = !on; b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "Diagramm" : "Tabelle";
@@ -1228,6 +1237,7 @@ function renderSavings() {
   }
 
   const st = goalStatus(g, txs, today, opts);
+  const cardSince = txs.filter((t) => isKarte(t) && t.datum >= `${g.start}-01`).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
   const rate = st.started ? st.needPerMonth : st.target;
   const plan = budgetPlan(an, rate);
   const tm = thisMonth(txs, today, rate, an.incAvg, opts);
@@ -1245,6 +1255,7 @@ function renderSavings() {
       <div class="goal-legend"><span><b class="num">${fmt(st.savedTotal)}</b> gespart · ${Math.round(st.pct * 100)} %</span>${st.started && !st.ended && st.fullMonths ? `<span class="muted">Plan nach ${plural(st.fullMonths, "Monat", "Monaten")}: ${fmt0(st.soll)}</span>` : ""}</div>
       <p class="goal-status ${line.cls}"><b>${esc(line.text)}</b></p>
       ${st.sparTotal || st.anlTotal ? `<p class="small muted" style="margin:0">Seit ${ymLabel(g.start)}: ${st.sparTotal >= 0 ? `${fmt0(st.sparTotal)} aufs Sparkonto` : `${fmt0(-st.sparTotal)} vom Sparkonto genommen`}${st.anlTotal ? ` · ${st.anlTotal > 0 ? `${fmt0(st.anlTotal)} in Anlagen (E-Trading)` : `${fmt0(-st.anlTotal)} aus Anlagen (E-Trading)`}${opts.anlagen ? ", zählt mit" : ", zählt nicht zum Sparziel"}` : ""}</p>` : ""}
+      ${cardSince > 0 ? `<p class="small muted" style="margin:0">${fmt0(cardSince)} auf die Kreditkarte geladen: zählt nicht als Ausgabe. Damit das Sparziel stimmt, lies auch die Kreditkartenabrechnungen ein.</p>` : ""}
       <label class="check small"><input type="checkbox" id="g-anlagen"${opts.anlagen ? " checked" : ""}> Anlagen (E-Trading) zum Sparziel zählen</label>
     </section>
     <section class="kpis" aria-label="Sparziel in Zahlen">

@@ -11,6 +11,8 @@ export const ANLAGE_KAT = new Set(["Anlagen (E-Trading)"]);
 // Money taken back from savings or investments is no income.
 export const SPAR_RUECK = new Set(["Entnahme Sparkonto"]);
 export const ANLAGE_RUECK = new Set(["Entnahme Anlagen"]);
+// Credit card top-ups and payments: neither spending nor saving (the purchases come with the card statement).
+export const KARTE_KAT = new Set(["Kreditkarte (Übertrag)"]);
 // Costs that cannot be cut from one month to the next (they need a contract change).
 export const FIX_KAT = new Set([
   "Wohnen & Miete", "Krankenkasse", "Versicherungen privat", "Steuern",
@@ -31,7 +33,8 @@ const isSparOut = (t) => t.typ === "ausgabe" && SPAR_KAT.has(t.kategorie);
 const isAnlOut = (t) => t.typ === "ausgabe" && ANLAGE_KAT.has(t.kategorie);
 const isSparIn = (t) => t.typ === "einnahme" && SPAR_RUECK.has(t.kategorie);
 const isAnlIn = (t) => t.typ === "einnahme" && ANLAGE_RUECK.has(t.kategorie);
-export const isTransfer = (t) => isSparOut(t) || isAnlOut(t) || isSparIn(t) || isAnlIn(t);
+export const isKarte = (t) => KARTE_KAT.has(t.kategorie);
+export const isTransfer = (t) => isSparOut(t) || isAnlOut(t) || isSparIn(t) || isAnlIn(t) || isKarte(t);
 export const isAnlage = (t) => isAnlOut(t) || isAnlIn(t);
 const isSpend = (t) => t.typ === "ausgabe" && !isTransfer(t);
 const isIncome = (t) => t.typ === "einnahme" && !isTransfer(t);
@@ -42,6 +45,7 @@ function totals(list, opts = {}) {
   const sum = (f) => list.filter(f).reduce((a, t) => a + t.betragCent, 0);
   const m = { inc: sum(isIncome), exp: sum(isSpend), sparOut: sum(isSparOut), sparIn: sum(isSparIn), anlOut: sum(isAnlOut), anlIn: sum(isAnlIn) };
   m.spar = m.sparOut - m.sparIn; m.anl = m.anlOut - m.anlIn;
+  m.karte = sum((t) => isKarte(t) && t.typ === "ausgabe") - sum((t) => isKarte(t) && t.typ === "einnahme");
   m.saved = m.inc - m.exp - m.sparIn - (opts.anlagen ? m.anlIn : m.anl);
   return m;
 }
