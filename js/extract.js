@@ -53,7 +53,7 @@ async function ocrRows(image, page, onProgress) {
     : (data.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => p.lines || []));
   return lines.map((l) => ({
     page, y: l.bbox.y0,
-    items: (l.words || []).filter((w) => w.text.trim()).map((w) => ({ str: w.text, x: w.bbox.x0, w: w.bbox.x1 - w.bbox.x0 })),
+    items: (l.words || []).filter((w) => w.text.trim()).map((w) => ({ str: w.text, x: w.bbox.x0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 })),
   })).filter((r) => r.items.length);
 }
 
@@ -70,7 +70,22 @@ function rowsToDoc(rows) {
   return { text: lines.join("\n"), lines, rows };
 }
 
-export async function readPdf(file, onProgress = () => {}) {
+// Some bank PDFs place every character on its own ("0","1",".","0","1"): glue pieces that touch
+// back together, so that dates and amounts are found again. Real column gaps stay separate.
+function mergeGlyphs(items) {
+  const out = [];
+  for (const it of items) {
+    const prev = out[out.length - 1];
+    if (prev && it.str === prev.str && Math.abs(it.x - prev.x) < 2) continue; // text drawn twice (fake bold)
+    const gap = prev ? it.x - (prev.x + prev.w) : Infinity;
+    if (gap < Math.min(prev?.h || 0, it.h) * 0.2 && gap > -it.h * 0.5) {
+      prev.str += (prev.sp ? " " : "") + it.str; prev.sp = it.sp; prev.w = it.x + it.w - prev.x; prev.h = Math.max(prev.h, it.h);
+    } else out.push({ ...it });
+  }
+  return out;
+}
+
+export async function readPdf(file, onProgress = () => {}, { forceOcr = false } = {}) {
   const lib = await pdfjs();
   const doc = await lib.getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
@@ -84,7 +99,7 @@ export async function readPdf(file, onProgress = () => {}) {
     const vp = page.getViewport({ scale: 1 });
     const tc = await page.getTextContent();
     const items = tc.items.filter((i) => i.str && i.str.trim())
-      .map((i) => ({ str: i.str.trim(), x: i.transform[4], y: vp.height - i.transform[5], w: i.width }));
+      .map((i) => ({ str: i.str.trim(), x: i.transform[4], y: vp.height - i.transform[5], w: i.width, h: Math.abs(i.transform[3]) || 8, sp: /\s$/.test(i.str) }));
     chars += items.reduce((a, i) => a + i.str.length, 0);
     items.sort((a, b) => a.y - b.y || a.x - b.x);
     for (const it of items) {
@@ -92,11 +107,11 @@ export async function readPdf(file, onProgress = () => {}) {
       if (row) row.items.push(it); else rows.push({ page: p, y: it.y, items: [it] });
     }
   }
-  rows.forEach((r) => r.items.sort((a, b) => a.x - b.x));
+  rows.forEach((r) => { r.items.sort((a, b) => a.x - b.x); r.items = mergeGlyphs(r.items); });
   rows.sort((a, b) => a.page - b.page || a.y - b.y);
   let preview = null;
   // A scan has (almost) no text layer: read it with OCR instead.
-  if (chars < 40 * pages) {
+  if (forceOcr || chars < 40 * pages) {
     rows = [];
     const ocrPages = Math.min(doc.numPages, 10);
     for (let p = 1; p <= ocrPages; p++) {
@@ -108,7 +123,7 @@ export async function readPdf(file, onProgress = () => {}) {
   } else {
     preview = (await renderPage(doc, 1, 0.8)).toDataURL("image/jpeg", 0.6);
   }
-  return { ...rowsToDoc(rows), preview, ocr: chars < 40 * pages };
+  return { ...rowsToDoc(rows), preview, pdf: true, ocr: forceOcr || chars < 40 * pages };
 }
 
 async function renderPage(doc, p, scale) {

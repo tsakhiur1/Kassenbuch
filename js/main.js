@@ -442,6 +442,7 @@ function docHtml(it, head) {
       ${it.preview ? `<img src="${it.preview}" alt="Vorschau von ${esc(it.name)}" data-act="q-zoom" data-q="${it.id}">` : ""}
       <div style="display:grid;gap:12px">
         ${it.warnings?.length ? `<ul class="warnings">${it.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+        ${it.struct ? `<div class="alert info"><span>Ist das ein Kontoauszug? Dann konnte die App den Aufbau nicht lesen. Speichere den anonymen Aufbau (nur Positionen und Platzhalter, keine Namen, Beträge oder IBAN) und lade ihn im Chat bei Claude hoch, damit die Erkennung angepasst werden kann. Bis dahin: Kontoauszug im E-Banking als CSV oder camt.053 exportieren.</span><button class="btn ghost sm" data-act="q-struct" data-q="${it.id}">Anonymen Aufbau speichern</button></div>` : ""}
         <div class="fields">
           ${lohn ? "" : `<div class="field w2"><span class="flabel">Art</span><div class="typ" role="radiogroup" aria-label="Art">
             <label><input type="radio" name="q-${it.id}-typ" value="einnahme" data-q="${it.id}" data-f="typ"${it.typ === "einnahme" ? " checked" : ""}><span>Einnahme</span></label>
@@ -554,6 +555,7 @@ async function queueClick(act, b) {
   const it = qItem(b); if (!it) return;
   if (act === "q-drop") { state.queue.splice(state.queue.indexOf(it), 1); renderQueue(); }
   else if (act === "q-zoom") window.open(it.preview, "_blank");
+  else if (act === "q-struct") download("kassenbuch-aufbau-anonym.txt", new Blob([it.struct], { type: "text/plain" }));
   else if (act === "q-all") {
     const open = it.rows.filter((r) => !r.booked), all = open.every((r) => r.checked);
     open.forEach((r) => { r.checked = !all; }); renderQueue();

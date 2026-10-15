@@ -1,7 +1,7 @@
 // From a dropped file to review items: reads the file, recognizes what it is and pre-fills the bookings.
 
 import { readPdf, readImage, readEml, parseCsv, parseCamt, decodeText, textToDoc } from "./extract.js";
-import { classify, parseBeleg, parseLohn, parseStatement, parseCsvRows, categorizeRows } from "./parse.js";
+import { classify, parseBeleg, parseLohn, parseStatement, parseCsvRows, categorizeRows, anonymizeDoc } from "./parse.js";
 import { daysBetween } from "./util.js";
 
 const ext = (name) => (String(name).toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || "";
@@ -49,7 +49,16 @@ export async function processFile(file, ctx, onProgress = () => {}, depth = 0) {
   } else throw new Error("Dieser Dateityp wird nicht unterstützt. Möglich sind PDF, JPG, PNG, CSV, camt.053 (.xml) und E-Mails (.eml).");
 
   if (!doc.text.trim()) throw new Error("Auf diesem Dokument wurde kein Text erkannt. Bei Fotos hilft ein schärferes, gerade aufgenommenes Bild.");
-  return [fromDoc(doc, ctx, { name: file.name, file })];
+  const item = fromDoc(doc, ctx, { name: file.name, file });
+  // Some PDFs (e.g. bank statements) have a text layer whose digits cannot be decoded.
+  // When nothing usable came out of it, read the page images with OCR instead.
+  if (doc.pdf && !doc.ocr && item.kind === "beleg" && !item.betragCent) {
+    onProgress("Text nicht lesbar, Texterkennung startet …");
+    const again = fromDoc(await readPdf(file, onProgress, { forceOcr: true }), ctx, { name: file.name, file });
+    if (again.kind === "auszug" || again.betragCent) return [again];
+  }
+  if (doc.pdf && item.kind === "beleg" && !item.betragCent) item.struct = anonymizeDoc(doc);
+  return [item];
 }
 
 function fromDoc(doc, ctx, { name, file }) {

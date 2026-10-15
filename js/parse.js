@@ -11,7 +11,7 @@ import { suggest } from "./learn.js";
 // Amounts need two decimals ("45.20", "1'234.50", "50.–") or Swiss thousands separators ("1'200"),
 // so that dates, years, percentages and phone numbers are not mistaken for amounts.
 // The leading group stands in for a lookbehind, which Safari before iOS 16.4 cannot parse.
-const AMOUNT_RE = /(^|[^\d.,'’])([-−])?((?:\d{1,3}(?:['’]\d{3})+|\d+)[.,](?:\d{2}|[-–]{1,2})|\d{1,3}(?:['’]\d{3})+)(?![.,]?\d)(-(?![\d]))?/g;
+const AMOUNT_RE = /(^|[^\d.,'’\u00a0\u2009\u202f])([-−])?((?:\d{1,3}(?:['’\u00a0\u2009\u202f]\d{3})+|\d+)[.,](?:\d{2}|[-–]{1,2})|\d{1,3}(?:['’]\d{3})+)(?![.,]?\d)(-(?![\d]))?/g;
 
 export function findAmounts(s) {
   s = String(s);
@@ -68,7 +68,7 @@ export function classify(doc) {
     const head = r.items.slice(0, 2).map((i) => i.str).join(" ");
     return findDates(head).length && findAmounts(r.items.map((i) => i.str).join(" ")).length;
   }).length;
-  const statementWords = /(kontoauszug|kontobewegungen|buchungsdatum|kontostand|account statement|auszug nr|saldo)/.test(t);
+  const statementWords = /(kontoauszug|kontobewegungen|buchungsdatum|kontostand|account statement|auszug nr|saldo|privatkonto|sparkonto|lastschrift|valuta)/.test(t);
   if ((statementWords && movementRows >= 3) || movementRows >= 10) return "kontoauszug";
   return "beleg";
 }
@@ -248,6 +248,19 @@ function nearestColumn(cols, cx) {
   return best;
 }
 
+// "3" and "243.00" right next to each other are one amount written with a space: "3 243.00".
+function joinThousands(items) {
+  const out = [];
+  for (const it of items) {
+    const prev = out[out.length - 1];
+    const gap = prev ? it.x - (prev.x + (prev.w || 0)) : Infinity;
+    if (prev && /^[-−]?\d{1,3}(?: \d{3})*$/.test(prev.str) && /^\d{3}(?: \d{3})*[.,]\d{2}-?$/.test(it.str) && gap < Math.max(prev.h || 0, it.h || 0, 8) * 0.8) {
+      out[out.length - 1] = { ...prev, str: `${prev.str} ${it.str}`, w: it.x + (it.w || 0) - prev.x };
+    } else out.push(it);
+  }
+  return out;
+}
+
 export function parseStatement(doc) {
   const out = [];
   let cols = null, prevSaldo = null, last = null;
@@ -255,7 +268,8 @@ export function parseStatement(doc) {
     const line = row.items.map((i) => i.str).join(" ");
     const hdr = {};
     for (const it of row.items) {
-      const s = it.str.toLowerCase(), cx = it.x + (it.w || 0) / 2;
+      // "Gutschrift in CHF", "Belastung (CHF)": the column word comes first
+      const s = it.str.toLowerCase().replace(/\s*(\(?\s*(in\s+)?(chf|eur)\s*\)?)$/, ""), cx = it.x + (it.w || 0) / 2;
       if (/^(belastung|lastschrift|soll|debit|ausgang|abgang|belastungen)$/.test(s)) hdr.debit = cx;
       else if (/^(gutschrift|haben|credit|eingang|zugang|gutschriften)$/.test(s)) hdr.credit = cx;
       else if (/^(saldo|kontostand|balance)$/.test(s)) hdr.saldo = cx;
@@ -266,7 +280,13 @@ export function parseStatement(doc) {
     const head = row.items.slice(0, 2).map((i) => i.str).join(" ");
     const dates = findDates(head);
     const amts = [];
-    for (const it of row.items) for (const a of findAmounts(it.str)) amts.push({ ...a, cx: it.x + (it.w || 0) / 2 });
+    const items = joinThousands(row.items);
+    for (const it of items) {
+      const cx = it.x + (it.w || 0) / 2;
+      // a column cell holding just "1 234.50" (space as thousands separator, e.g. PostFinance)
+      if (/^[-−]?\d{1,3}(?: \d{3})+[.,]\d{2}-?$/.test(it.str.trim())) { amts.push({ rappen: parseBetrag(it.str), index: 0, cx }); continue; }
+      for (const a of findAmounts(it.str)) amts.push({ ...a, cx });
+    }
     if (dates.length && amts.length) {
       if (BALANCE.test(line) && amts.length <= 2) { prevSaldo = amts[amts.length - 1].rappen; last = null; continue; }
       let value = null, saldo = null, unsicher = false;
@@ -287,7 +307,7 @@ export function parseStatement(doc) {
         else { value = -first; unsicher = true; }
       }
       if (saldo != null) prevSaldo = saldo;
-      const words = row.items.map((i) => i.str).filter((s) => !findDates(s).length && !findAmounts(s).length && !/^(chf|eur)$/i.test(s.trim()));
+      const words = items.map((i) => i.str).filter((s) => !findDates(s).length && !findAmounts(s).length && !/^(chf|eur)$/i.test(s.trim()));
       last = { datum: dates[0].iso, betragCent: Math.abs(value), typ: value > 0 ? "einnahme" : "ausgabe", text: words.join(" ").replace(/\s+/g, " ").trim().slice(0, 140), partner: "", unsicher, page: row.page, y: row.y };
       if (last.betragCent) out.push(last);
     } else if (last && !dates.length && !amts.length && line.trim() && row.page === last.page && Math.abs(row.y - last.y) < 40 && !BALANCE.test(line)) {
@@ -370,4 +390,16 @@ export function categorizeRows(rows, learn) {
     r.kategorie = s.kategorie; r.bereich = s.bereich; r.quelle = r.unsicher ? "unsicher" : s.quelle;
   }
   return rows;
+}
+
+// ---------- anonymous layout report ----------
+
+// When a PDF cannot be read, this report shows its layout without the content: letters become
+// x/X, digits become 5, only common column words stay readable. Nothing personal is left in it.
+const KEEP_WORDS = /^(datum|text|valuta|saldo|kontostand|gutschrift|gutschriften|lastschrift|belastung|belastungen|betrag|soll|haben|chf|eur|in|total|kontoauszug|privatkonto|sparkonto|buchung|buchungsdatum|avisierungstext|details|seite)$/i;
+export function anonymizeDoc(doc) {
+  const mask = (w) => (KEEP_WORDS.test(w) ? w : w.replace(/[a-zäöüàéèç]/g, "x").replace(/[A-ZÄÖÜÀÉÈ]/g, "X").replace(/\d/g, "5")
+    .replace(/[^\x20-\x7e]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`));
+  const lines = doc.rows.slice(0, 300).map((r) => `S${r.page} y${Math.round(r.y)} | ` + r.items.map((i) => `${Math.round(i.x)}:${i.str.split(/(\s+)/).map(mask).join("")}`).join(" | "));
+  return `Kassenbuch – anonymer Aufbau (${doc.ocr ? "Texterkennung" : "Textebene"}, ${doc.rows.length} Zeilen)\n\n${lines.join("\n")}\n`;
 }
