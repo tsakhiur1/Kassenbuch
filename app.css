@@ -373,10 +373,23 @@ table.data td { padding: 6px 8px; border-bottom: 1px solid var(--rule); }
 table.data .r { text-align: right; }
 
 .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
-.stat { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; min-width: 0; }
-.stat dt { font-size: 0.75rem; color: var(--muted); }
-.stat dd { margin: 2px 0 0; display: grid; gap: 1px; min-width: 0; }
-.stat dd b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stat dd small { font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat { background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; min-width: 0; display: grid; gap: 1px; align-content: start; text-align: left; font: inherit; color: inherit; }
+.stat .st-l { font-size: 0.75rem; color: var(--muted); }
+.stat b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat small { font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1280px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .stat dd small, .stat dd b { white-space: normal; } }
+@media (max-width: 520px) { .stat small, .stat b { white-space: normal; } }
+
+/* ---------- click a number to see its bookings ---------- */
+.link { cursor: pointer; }
+button.cat { display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; padding: 6px 8px; margin: -6px -8px; border-radius: 8px; box-sizing: content-box; }
+.cats { gap: 14px; }
+.cat.link:hover, .stat.link:hover, .tile.link:hover { background: var(--sunken); }
+.tile.link:hover { border-color: var(--accent); }
+.stat.link:hover { border-color: var(--accent); }
+.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chart .hit.link { cursor: pointer; }
+.cat.link .cat-top span:first-child::after, .stat.link .st-l::after { content: " ›"; color: var(--muted); }
+.drill { display: grid; gap: 12px; padding: 20px; }
+#drill-list { max-height: min(60vh, 560px); overflow: auto; }
+#dlg-drill { width: min(760px, calc(100vw - 32px)); }

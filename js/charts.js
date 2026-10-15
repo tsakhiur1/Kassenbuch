@@ -65,7 +65,8 @@ export function columnChart({ groups, series, line, height = 240, fmt, ariaLabel
   groups.forEach((g, i) => {
     const rows = series.map((s) => ({ label: s.label, value: fmt(g.values[s.key] || 0), color: s.color }));
     if (line && g.values[line.key] != null) rows.push({ label: line.label, value: fmt(g.values[line.key]), color: line.color });
-    svg += `<rect class="hit" x="${L + cw * i}" y="${T}" width="${cw}" height="${H - T - B}" tabindex="0" ${tipAttr(g.title || g.label, rows)}><title>${esc(g.title || g.label)}</title></rect>`;
+    const drill = g.drill ? ` data-act="drill" data-v="${esc(g.drill)}" role="button" aria-label="${esc(`Buchungen ${g.title || g.label} anzeigen`)}"` : "";
+    svg += `<rect class="hit${g.drill ? " link" : ""}" x="${L + cw * i}" y="${T}" width="${cw}" height="${H - T - B}" tabindex="0"${drill} ${tipAttr(g.title || g.label, rows)}><title>${esc(g.title || g.label)}</title></rect>`;
   });
   return svg + "</svg>";
 }

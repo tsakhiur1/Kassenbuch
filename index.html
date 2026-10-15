@@ -126,6 +126,16 @@
   </form>
 </dialog>
 
+<!-- ===== bookings behind a number (drill-down) ===== -->
+<dialog id="dlg-drill" aria-labelledby="drill-title">
+  <div class="drill">
+    <div class="dlg-head"><h2 id="drill-title">Buchungen</h2><button class="btn quiet sm" type="button" data-close>Schliessen</button></div>
+    <p class="small" id="drill-sum"></p>
+    <div class="seg" role="group" aria-label="Sortierung"><button type="button" data-sort="datum" aria-pressed="true">Nach Datum</button><button type="button" data-sort="betrag" aria-pressed="false">Nach Betrag</button></div>
+    <div class="list" id="drill-list"></div>
+  </div>
+</dialog>
+
 <!-- ===== recurring dialog ===== -->
 <dialog id="dlg-rec">
   <form id="rec" method="dialog" novalidate>

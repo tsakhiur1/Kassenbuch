@@ -25,8 +25,11 @@ export function tokens(text) {
 }
 
 // "Debitkarte MIGROS ZUERICH 1234" -> "migros zuerich"
+// "APPLE PAY KAUF/DIENSTLEISTUNG VOM 02.01.2026 MIGROS" -> "migros …": how it was paid is not who was paid
+const PAY_NOISE = /\b(apple\s*pay|google\s*pay|samsung\s*pay|kauf\s*\/\s*dienstleistung|kauf|dienstleistung|online-?kauf)\b|\bvom\s+\d{1,2}\.\d{1,2}\.\d{2,4}/gi;
+export const merchantName = (text) => String(text || "").replace(PAY_NOISE, " ").replace(/\s+/g, " ").trim();
 export function merchantKey(text) {
-  return tokens(text).slice(0, 2).join(" ");
+  return tokens(String(text || "").replace(PAY_NOISE, " ")).slice(0, 2).join(" ");
 }
 
 // [pattern, category, area, direction]

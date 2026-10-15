@@ -3,7 +3,7 @@
 import * as vault from "./vault.js";
 import { fmt, fmt0, MONTHS, MONTHS_LONG, RATES, todayIso, dmy, esc, parseBetrag, vatOf, nettoOf, uid, plural, debounce, daysBetween } from "./util.js";
 import { KAT, konto, bereichOf, defaultKat } from "./categories.js";
-import { train, learnedCount, merchantKey } from "./learn.js";
+import { train, learnedCount, merchantKey, merchantName } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
@@ -347,8 +347,8 @@ function renderOverview() {
         ${quote != null ? `<div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, quote)}" aria-label="${biz ? "Marge" : "Sparquote"}"><div style="width:${Math.max(0, Math.min(100, quote))}%"></div></div>
           <span class="small muted">${biz ? "Marge" : "Sparquote"} <b class="fg">${quote} %</b> der Einnahmen${moved > 0 ? ` · ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}${invested > 0 ? ` · ${fmt0(invested)} angelegt` : invested < 0 ? ` · ${fmt0(-invested)} aus Anlagen` : ""}</span>` : `<span class="small muted">noch keine Einnahmen in ${esc(r.label)}</span>`}
       </div>
-      <div class="tile"><span class="label"><i class="key" style="background:var(--c-inc)"></i>Einnahmen</span><span class="tile-val">${fmt(inc)}</span>${deltaHtml(inc, pInc, true, pr.label)}<span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span>${sparkline(last12.map((m) => m.inc))}</div>
-      <div class="tile"><span class="label"><i class="key" style="background:var(--c-exp)"></i>Ausgaben</span><span class="tile-val">${fmt(exp)}</span>${deltaHtml(exp, pExp, false, pr.label)}<span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span>${sparkline(last12.map((m) => m.exp))}</div>
+      <div class="tile link" data-act="drill" data-v="inc" role="button" tabindex="0" aria-label="Einnahmen ${esc(r.label)}: Buchungen anzeigen"><span class="label"><i class="key" style="background:var(--c-inc)"></i>Einnahmen</span><span class="tile-val">${fmt(inc)}</span>${deltaHtml(inc, pInc, true, pr.label)}<span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span>${sparkline(last12.map((m) => m.inc))}</div>
+      <div class="tile link" data-act="drill" data-v="exp" role="button" tabindex="0" aria-label="Ausgaben ${esc(r.label)}: Buchungen anzeigen"><span class="label"><i class="key" style="background:var(--c-exp)"></i>Ausgaben</span><span class="tile-val">${fmt(exp)}</span>${deltaHtml(exp, pExp, false, pr.label)}<span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span>${sparkline(last12.map((m) => m.exp))}</div>
       <div class="tile"><span class="label">${k4.label}</span><span class="tile-val">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
     ${goalStrip()}
@@ -366,6 +366,7 @@ function renderOverview() {
   bindTooltips($("view"));
   setHandlers((act, b) => {
     if (act === "show-open") { state.filter = "offen"; route("buchungen"); }
+    else if (act === "drill") openDrill(b.dataset.v);
     else if (act === "table") {
       const t = $(b.dataset.v), on = t.hidden;
       t.hidden = !on; b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "Diagramm" : "Tabelle";
@@ -394,7 +395,7 @@ function monthPanel(all, brutto, word) {
   const months = Array.from({ length: 12 }, (_, i) => {
     const ym = `${y}-${String(i + 1).padStart(2, "0")}`, m = sums(all.filter((t) => t.datum.startsWith(ym)));
     const inc = brutto ? m.incB : m.incN, exp = brutto ? m.expB : m.expN;
-    return { label: MONTHS[i], title: `${MONTHS_LONG[i]} ${y}`, values: { inc, exp, bal: inc || exp ? inc - exp : null }, dim: Math.floor(i / PERIOD_SIZE[mode]) !== idx };
+    return { label: MONTHS[i], title: `${MONTHS_LONG[i]} ${y}`, values: { inc, exp, bal: inc || exp ? inc - exp : null }, dim: Math.floor(i / PERIOD_SIZE[mode]) !== idx, drill: inc || exp ? `month:${ym}` : null };
   });
   const series = [{ key: "inc", label: "Einnahmen", color: "var(--c-inc)" }, { key: "exp", label: "Ausgaben", color: "var(--c-exp)" }];
   const line = { key: "bal", label: word, color: "var(--c-bal)" };
@@ -447,7 +448,7 @@ function statsPanel(inP, r, val, exp, inc, profit) {
   const byM = new Map();
   for (const t of spend) {
     const k = merchantKey(t.partner || t.notiz || "") || t.kategorie;
-    const e = byM.get(k) || { name: t.partner || t.notiz || t.kategorie, n: 0, sum: 0 }; e.n++; e.sum += val(t); byM.set(k, e);
+    const e = byM.get(k) || { key: k, name: merchantName(t.partner || t.notiz) || t.kategorie, n: 0, sum: 0 }; e.n++; e.sum += val(t); byM.set(k, e);
   }
   const often = [...byM.values()].sort((a, b) => b.n - a.n || b.sum - a.sum)[0];
   const fix = spend.filter((t) => FIX_KAT.has(t.kategorie)).reduce((a, t) => a + val(t), 0);
@@ -455,18 +456,21 @@ function statsPanel(inP, r, val, exp, inc, profit) {
   for (const t of spend) wd[(new Date(t.datum + "T12:00:00").getDay() + 6) % 7] += val(t);
   const WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"], WDL = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
   const topWd = wd.indexOf(Math.max(...wd));
-  const stat = (label, value, sub = "") => `<div class="stat"><dt>${label}</dt><dd><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</dd></div>`;
+  // every number opens the bookings behind it
+  const stat = (label, value, sub = "", drill = "") => drill
+    ? `<button type="button" class="stat link" data-act="drill" data-v="${esc(drill)}" aria-label="${esc(label)}: Buchungen anzeigen"><span class="st-l">${label}</span><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</button>`
+    : `<div class="stat"><span class="st-l">${label}</span><b>${value}</b>${sub ? `<small>${sub}</small>` : ""}</div>`;
   return `<section class="panel"><div class="panel-head"><h2>Statistik</h2><span class="muted small">${esc(r.label)}</span></div>
-      <dl class="stats">
-        ${stat("Ø Ausgaben pro Tag", daysSoFar ? fmt(Math.round(exp / daysSoFar)) : "–", daysSoFar ? plural(daysSoFar, "Tag", "Tage") : "")}
-        ${stat("Grösste Ausgabe", biggest ? fmt(val(biggest)) : "–", biggest ? `${esc((biggest.partner || biggest.notiz || biggest.kategorie).slice(0, 40))} · ${dmy(biggest.datum)}` : "")}
-        ${stat("Am häufigsten", often ? esc(often.name.slice(0, 28)) : "–", often ? `${plural(often.n, "Zahlung", "Zahlungen")} · ${fmt0(often.sum)}` : "")}
-        ${stat("Fixkosten", exp ? `${Math.round((fix / exp) * 100)} %` : "–", exp ? `${fmt0(fix)} der Ausgaben` : "")}
-        ${stat("Buchungen", String(inP.length), `${inP.filter((t) => t.typ === "einnahme").length} Einnahmen · ${spend.length} Ausgaben`)}
-        ${stat("Teuerster Wochentag", spend.length ? WDL[topWd] : "–", spend.length ? fmt0(wd[topWd]) : "")}
-      </dl>
+      <div class="stats">
+        ${stat("Ø Ausgaben pro Tag", daysSoFar ? fmt(Math.round(exp / daysSoFar)) : "–", daysSoFar ? plural(daysSoFar, "Tag", "Tage") : "", spend.length ? "exp" : "")}
+        ${stat("Grösste Ausgabe", biggest ? fmt(val(biggest)) : "–", biggest ? `${esc(merchantName(biggest.partner || biggest.notiz || biggest.kategorie).slice(0, 40))} · ${dmy(biggest.datum)}` : "", biggest ? "biggest" : "")}
+        ${stat("Am häufigsten", often ? esc(often.name.slice(0, 40)) : "–", often ? `${plural(often.n, "Zahlung", "Zahlungen")} · ${fmt0(often.sum)}` : "", often ? `merchant:${often.key}` : "")}
+        ${stat("Fixkosten", exp ? `${Math.round((fix / exp) * 100)} %` : "–", exp ? `${fmt0(fix)} der Ausgaben` : "", fix ? "fix" : "")}
+        ${stat("Buchungen", String(inP.length), `${inP.filter((t) => t.typ === "einnahme").length} Einnahmen · ${spend.length} Ausgaben`, inP.length ? "all" : "")}
+        ${stat("Teuerster Wochentag", spend.length ? WDL[topWd] : "–", spend.length ? fmt0(wd[topWd]) : "", spend.length ? `wd:${topWd}` : "")}
+      </div>
       ${spend.length ? `<h3>Ausgaben nach Wochentag</h3><div class="chart">${columnChart({ height: 170, fmt, ariaLabel: "Ausgaben nach Wochentag",
-        groups: WD.map((d, i) => ({ label: d, title: WDL[i], values: { exp: wd[i] } })), series: [{ key: "exp", label: "Ausgaben", color: "var(--c-exp)" }] })}</div>` : ""}
+        groups: WD.map((d, i) => ({ label: d, title: WDL[i], values: { exp: wd[i] }, drill: wd[i] ? `wd:${i}` : null })), series: [{ key: "exp", label: "Ausgaben", color: "var(--c-exp)" }] })}</div>` : ""}
     </section>`;
 }
 
@@ -507,10 +511,63 @@ function catsHtml(inP, r, brutto) {
       cls = pct > 1 ? "over" : pct > 0.85 ? "near" : "ok";
       hint = pct > 1 ? `<div class="hint over">${fmt(v - b)} über Budget (${fmt0(b)})</div>` : `<div class="hint">${Math.round(pct * 100)} % von ${fmt0(b)} · noch ${fmt(b - v)} frei</div>`;
     }
-    const share = total ? Math.round((v / total) * 100) : 0;
-    return `<div class="cat"><div class="cat-top"><span>${esc(k)}</span><span><span class="share">${share} %</span> <span class="num">${fmt(v)}</span></span></div><div class="bar ${cls}"><div style="width:${width.toFixed(1)}%"></div></div>${hint}</div>`;
+    const pct = total ? (v / total) * 100 : 0, share = !v ? "–" : pct < 1 ? "< 1 %" : `${Math.round(pct)} %`;
+    const tag = v ? `button type="button" class="cat link" data-act="drill" data-v="cat:${esc(k)}" aria-label="${esc(k)}: Buchungen anzeigen"` : `div class="cat"`;
+    return `<${tag}><div class="cat-top"><span>${esc(k)}</span><span><span class="share">${share}</span> <span class="num">${fmt(v)}</span></span></div><div class="bar ${cls}"><div style="width:${width.toFixed(1)}%"></div></div>${hint}</${v ? "button" : "div"}>`;
   }).join("");
 }
+
+// ---------- the bookings behind a number ----------
+const ddlg = $("dlg-drill");
+function drillSet(key) {
+  const r = range(), base = visibleTx().filter((t) => !isTransfer(t)), inR = base.filter((t) => inRange(t, r));
+  const spend = inR.filter((t) => t.typ === "ausgabe");
+  const [kind, arg] = [key.split(":")[0], key.slice(key.indexOf(":") + 1)];
+  const WDL = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+  switch (kind) {
+    case "inc": return { title: `Einnahmen ${r.label}`, list: inR.filter((t) => t.typ === "einnahme") };
+    case "exp": return { title: `Ausgaben ${r.label}`, list: spend };
+    case "biggest": return { title: `Grösste Ausgaben ${r.label}`, list: spend, sort: "betrag" };
+    case "fix": return { title: `Fixkosten ${r.label}`, list: spend.filter((t) => FIX_KAT.has(t.kategorie)) };
+    case "all": return { title: `Alle Buchungen ${r.label}`, list: inR };
+    case "cat": return { title: `${arg} · ${r.label}`, list: spend.filter((t) => t.kategorie === arg) };
+    case "wd": return { title: `Ausgaben an ${WDL[+arg]}en · ${r.label}`, list: spend.filter((t) => (new Date(t.datum + "T12:00:00").getDay() + 6) % 7 === +arg) };
+    case "merchant": {
+      const list = spend.filter((t) => (merchantKey(t.partner || t.notiz || "") || t.kategorie) === arg);
+      return { title: `${merchantName(list[0]?.partner || list[0]?.notiz) || arg} · ${r.label}`, list };
+    }
+    case "month": return { title: `${MONTHS_LONG[+arg.slice(5, 7) - 1]} ${arg.slice(0, 4)}`, list: base.filter((t) => t.datum.startsWith(arg)) };
+    default: return { title: "Buchungen", list: [] };
+  }
+}
+function openDrill(key, sort) {
+  const set = drillSet(key);
+  state.drill = { key, sort: sort || set.sort || "datum" };
+  const list = [...set.list].sort(state.drill.sort === "betrag" ? (a, b) => b.betragCent - a.betragCent || b.datum.localeCompare(a.datum) : (a, b) => b.datum.localeCompare(a.datum) || b.betragCent - a.betragCent);
+  const inc = list.filter((t) => t.typ === "einnahme").reduce((a, t) => a + t.betragCent, 0), exp = list.filter((t) => t.typ === "ausgabe").reduce((a, t) => a + t.betragCent, 0);
+  $("drill-title").textContent = set.title;
+  $("drill-sum").innerHTML = `<b>${plural(list.length, "Buchung", "Buchungen")}</b>${exp ? ` · Ausgaben <b class="num">${fmt(exp)}</b>` : ""}${inc ? ` · Einnahmen <b class="num">${fmt(inc)}</b>` : ""}${list.length > 1 && exp ? ` · Ø ${fmt(Math.round(exp / Math.max(1, list.filter((t) => t.typ === "ausgabe").length)))} pro Ausgabe` : ""}`;
+  ddlg.querySelectorAll("[data-sort]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.sort === state.drill.sort)));
+  $("drill-list").innerHTML = list.length ? list.map(rowHtml).join("") : `<p class="muted">Keine Buchungen.</p>`;
+  if (!ddlg.open) ddlg.showModal();
+}
+ddlg.addEventListener("click", (e) => {
+  if (e.target.closest("[data-close]")) { state.drill = null; ddlg.close(); return; }
+  const s = e.target.closest("[data-sort]"); if (s) { openDrill(state.drill.key, s.dataset.sort); return; }
+  const row = e.target.closest('[data-act="edit"]');
+  if (row) { state.drillReturn = true; ddlg.close(); openEntry(row.dataset.id); }
+});
+ddlg.addEventListener("cancel", () => { state.drill = null; });
+// back to the list after editing a booking from it
+$("dlg-entry").addEventListener("close", () => {
+  if (!state.drillReturn) return;
+  state.drillReturn = false;
+  if (state.drill && state.data) setTimeout(() => openDrill(state.drill.key, state.drill.sort), 0);
+});
+// cards and chart columns with data-act work with the keyboard like buttons
+$("view").addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.('[data-act][role="button"]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+});
 
 // =====================================================================
 // Erfassen: drop documents, the app's AI reads them, the user checks and books
