@@ -415,21 +415,30 @@ function guessColumns(rows) {
 
 // ---------- shared: sort statement lines with the learning model ----------
 
-// Money moved between your own accounts (Privatkonto, Sparkonto, E-Trading) is saving or taking
-// savings back, not spending or income.
-const OWN_TRANSFER = /(übertrag|uebertrag|kontoübertrag|kontouebertrag|umbuchung|eigenes konto|eigene konten|spar-?konto|sparplan|e-?trading|trading-?konto|\bdepot\b|anlagekonto|vorsorgekonto|freizügigkeit)/i;
+// Money moved between your own accounts is saving or investing (or taking it back), not spending
+// or income. E-Trading and securities are investments, everything else goes to the savings account.
+const ANLAGE_RE = /(e-?trading|trading|\bdepot\b|wertschrift|anlagekonto|börse|boerse|fonds|etf)/i;
+const OWN_TRANSFER = /(übertrag|uebertrag|kontoübertrag|kontouebertrag|umbuchung|eigenes konto|eigene konten|spar-?konto|sparplan|e-?trading|trading-?konto|\bdepot\b|anlagekonto)/i;
 const digitsOnly = (s) => String(s).replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+// "anlage", "spar" or null. An own account in the settings is an investment account when its line
+// says so ("E-Trading CH56 …").
 export function ownTransfer(text, ownAccounts = []) {
   const flat = digitsOnly(text);
-  if (ownAccounts.some((a) => { const k = digitsOnly(a); return k.length >= 6 && flat.includes(k.length > 12 ? k.slice(-12) : k); })) return true;
-  return OWN_TRANSFER.test(text);
+  const acc = ownAccounts.find((a) => { const k = digitsOnly(a).replace(/^[A-Z-]*(?=[A-Z]{2}\d)/, ""); return k.length >= 6 && flat.includes(k.length > 12 ? k.slice(-12) : k); });
+  if (acc) return ANLAGE_RE.test(acc) || ANLAGE_RE.test(text) ? "anlage" : "spar";
+  if (!OWN_TRANSFER.test(text)) return null;
+  return ANLAGE_RE.test(text) ? "anlage" : "spar";
 }
-export const SPAR_EIN = "Entnahme Sparkonto";
+export const TRANSFER_KAT = {
+  spar: { ausgabe: "Sparkonto", einnahme: "Entnahme Sparkonto" },
+  anlage: { ausgabe: "Anlagen (E-Trading)", einnahme: "Entnahme Anlagen" },
+};
 
 export function categorizeRows(rows, learn, ownAccounts = []) {
   for (const r of rows) {
-    if (ownTransfer(`${r.text} ${r.partner || ""}`, ownAccounts)) {
-      r.kategorie = r.typ === "ausgabe" ? "Sparen & Anlegen" : SPAR_EIN; r.bereich = "privat"; r.quelle = r.unsicher ? "unsicher" : "regel";
+    const own = ownTransfer(`${r.text} ${r.partner || ""}`, ownAccounts);
+    if (own) {
+      r.kategorie = TRANSFER_KAT[own][r.typ]; r.bereich = "privat"; r.quelle = r.unsicher ? "unsicher" : "regel";
       continue;
     }
     const s = suggest(learn, { text: r.text, partner: r.partner, typ: r.typ, fallbackBereich: "privat" });

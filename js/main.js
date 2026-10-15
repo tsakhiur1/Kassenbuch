@@ -7,7 +7,7 @@ import { train, learnedCount } from "./learn.js";
 import { processFile, markDupes } from "./process.js";
 import { bookDue, INTERVAL_LABEL } from "./recurring.js";
 import { loadScript } from "./extract.js";
-import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer } from "./savings.js";
+import { analyze, goalStatus, thisMonth, budgetPlan, tips, addYm, isTransfer, isAnlage } from "./savings.js";
 
 const $ = (id) => document.getElementById(id);
 const PERIOD_SIZE = { monat: 1, quartal: 3, semester: 6, jahr: 12 };
@@ -242,7 +242,8 @@ function renderOverview() {
   const r = range(), modus = mwstModus(), biz = state.bereich === "geschaeft";
   const brutto = !biz || modus !== "effektiv";
   const all = visibleTx().filter((t) => !isTransfer(t)), inP = all.filter((t) => inRange(t, r)), s = sums(inP);
-  const moved = visibleTx().filter((t) => isTransfer(t) && inRange(t, r)).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
+  const net = (f) => visibleTx().filter((t) => f(t) && inRange(t, r)).reduce((a, t) => a + (t.typ === "ausgabe" ? t.betragCent : -t.betragCent), 0);
+  const moved = net((t) => isTransfer(t) && !isAnlage(t)), invested = net(isAnlage);
   const inc = brutto ? s.incB : s.incN, exp = brutto ? s.expB : s.expN, profit = inc - exp;
   const count = (typ) => plural(inP.filter((t) => t.typ === typ).length, "Buchung", "Buchungen");
 
@@ -282,7 +283,7 @@ function renderOverview() {
     <section class="kpis" aria-label="Kennzahlen">
       <div class="kpi"><span class="label">Einnahmen</span><span class="val inc">${fmt(inc)}</span><span class="sub">${brutto ? count("einnahme") : `netto · brutto ${fmt0(s.incB)}`}</span></div>
       <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt(exp)}</span><span class="sub">${brutto ? count("ausgabe") : `netto · brutto ${fmt0(s.expB)}`}</span></div>
-      <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}${moved > 0 ? ` · davon ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}</span></div>
+      <div class="kpi"><span class="label">${biz ? "Gewinn" : "Saldo"}</span><span class="val ${profit >= 0 ? "inc" : "exp"}">${fmt(profit)}</span><span class="sub">${inc > 0 ? `${biz ? "Marge" : "Sparquote"} ${Math.round((profit / inc) * 100)} %` : "noch keine Einnahmen"}${moved > 0 ? ` · davon ${fmt0(moved)} aufs Sparkonto` : moved < 0 ? ` · ${fmt0(-moved)} vom Sparkonto genommen` : ""}${invested > 0 ? ` · ${fmt0(invested)} angelegt` : invested < 0 ? ` · ${fmt0(-invested)} aus Anlagen` : ""}</span></div>
       <div class="kpi"><span class="label">${k4.label}</span><span class="val ${k4.cls}">${k4.val}</span><span class="sub">${esc(k4.sub)}</span></div>
     </section>
     ${goalStrip()}
@@ -301,11 +302,14 @@ function renderOverview() {
   state.notice = "";
 }
 
+// whether investments (E-Trading) count towards the savings goal
+const goalOpts = () => ({ anlagen: !!state.data.settings.anlagenImZiel });
+
 // a one-line reminder of the savings goal on the overview
 function goalStrip() {
   const g = state.data.settings.sparziel;
   if (!g) return Object.keys(state.data.tx).length ? `<div class="alert info"><span><strong>Tipp:</strong> Lege ein Sparziel fest. Die App zeigt dir dann, wie viel du jeden Monat noch ausgeben kannst.</span><button class="btn ghost sm" data-act="goto" data-v="sparen">Sparziel festlegen</button></div>` : "";
-  const st = goalStatus(g, allTx(), todayIso()), line = goalLine(g, st);
+  const st = goalStatus(g, allTx(), todayIso(), goalOpts()), line = goalLine(g, st);
   return `<button type="button" class="goal-strip" data-act="goto" data-v="sparen">
       <span><b>Sparziel ${fmt0(g.betrag)}</b><small class="${line.cls}">${esc(line.text)}</small></span>
       <span class="goal-bar sm"><span class="fill${st.diff < 0 && st.started ? " behind" : ""}" style="width:${Math.max(0, Math.min(100, st.pct * 100)).toFixed(1)}%"></span></span>
@@ -949,7 +953,7 @@ function analysisHtml(an) {
   return `<section class="panel"><div class="panel-head"><h2>Wohin dein Geld geht</h2><span class="muted small">Durchschnitt pro Monat · ${esc(period)} · Geschäft und Privat</span></div>
       <div class="kpis kpis3">
         <div class="kpi"><span class="label">Einnahmen</span><span class="val inc">${fmt0(an.incAvg)}</span><span class="sub">pro Monat</span></div>
-        <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt0(an.expAvg)}</span><span class="sub">ohne Säule 3a und Sparen</span></div>
+        <div class="kpi"><span class="label">Ausgaben</span><span class="val exp">${fmt0(an.expAvg)}</span><span class="sub">ohne Sparkonto, 3a und Anlagen</span></div>
         <div class="kpi"><span class="label">Bleibt übrig</span><span class="val ${an.savedAvg >= 0 ? "inc" : "exp"}">${fmt0(an.savedAvg)}</span><span class="sub">${an.incAvg > 0 ? `Sparquote ${Math.round((an.savedAvg / an.incAvg) * 100)} %` : "keine Einnahmen erfasst"}</span></div>
       </div>
       <div class="grid2">
@@ -981,11 +985,11 @@ function planHtml(plan, st, an) {
 
 function renderSavings() {
   const s = state.data.settings, g = s.sparziel, today = todayIso();
-  const txs = allTx(), an = analyze(txs, today);
+  const txs = allTx(), opts = goalOpts(), an = analyze(txs, today, opts);
   if (!g || state.editGoal) {
     $("view").innerHTML = `<div class="pagehead"><h1>Sparziel</h1></div>
       <section class="panel"><h2>${g ? "Sparziel ändern" : "Sparziel festlegen"}</h2>
-        <p class="muted">Wie viel willst du in welcher Zeit sparen? Die App rechnet aus, wie viel du dafür jeden Monat zur Seite legen musst, zeigt dir, was du diesen Monat noch ausgeben kannst, und schlägt passende Budgets vor. Einzahlungen auf Sparkonto und Säule 3a zählen als gespart.</p>
+        <p class="muted">Wie viel willst du in welcher Zeit sparen? Die App rechnet aus, wie viel du dafür jeden Monat zur Seite legen musst, zeigt dir, was du diesen Monat noch ausgeben kannst, und schlägt passende Budgets vor. Überträge aufs Sparkonto und Säule 3a zählen als gespart; Anlagen (E-Trading) werden separat gezeigt.</p>
         ${goalForm(g)}
         ${g ? `<div class="actions"><button class="btn quiet sm" type="button" data-act="goal-cancel">Abbrechen</button><button class="btn ghost danger sm" type="button" data-act="goal-del">Ziel löschen</button></div>` : ""}
       </section>
@@ -1004,10 +1008,10 @@ function renderSavings() {
     return;
   }
 
-  const st = goalStatus(g, txs, today);
+  const st = goalStatus(g, txs, today, opts);
   const rate = st.started ? st.needPerMonth : st.target;
   const plan = budgetPlan(an, rate);
-  const tm = thisMonth(txs, today, rate, an.incAvg);
+  const tm = thisMonth(txs, today, rate, an.incAvg, opts);
   const line = goalLine(g, st);
   const pct = Math.max(0, Math.min(100, st.pct * 100)), sollPct = Math.min(100, (st.soll / g.betrag) * 100);
   const tipList = tips(an, an.abos);
@@ -1021,6 +1025,8 @@ function renderSavings() {
       </div>
       <div class="goal-legend"><span><b class="num">${fmt(st.savedTotal)}</b> gespart · ${Math.round(st.pct * 100)} %</span>${st.started && !st.ended && st.fullMonths ? `<span class="muted">Plan nach ${plural(st.fullMonths, "Monat", "Monaten")}: ${fmt0(st.soll)}</span>` : ""}</div>
       <p class="goal-status ${line.cls}"><b>${esc(line.text)}</b></p>
+      ${st.sparTotal || st.anlTotal ? `<p class="small muted" style="margin:0">Seit ${ymLabel(g.start)}: ${st.sparTotal >= 0 ? `${fmt0(st.sparTotal)} aufs Sparkonto` : `${fmt0(-st.sparTotal)} vom Sparkonto genommen`}${st.anlTotal ? ` · ${st.anlTotal > 0 ? `${fmt0(st.anlTotal)} in Anlagen (E-Trading)` : `${fmt0(-st.anlTotal)} aus Anlagen (E-Trading)`}${opts.anlagen ? ", zählt mit" : ", zählt nicht zum Sparziel"}` : ""}</p>` : ""}
+      <label class="check small"><input type="checkbox" id="g-anlagen"${opts.anlagen ? " checked" : ""}> Anlagen (E-Trading) zum Sparziel zählen</label>
     </section>
     <section class="kpis" aria-label="Sparziel in Zahlen">
       <div class="kpi"><span class="label">Pro Monat nötig</span><span class="val">${fmt0(rate)}</span><span class="sub">${st.started ? `noch ${plural(st.remainingMonths, "Monat", "Monate")}` : `ab ${ymLabel(g.start)}`}</span></div>
@@ -1031,7 +1037,7 @@ function renderSavings() {
     <div class="grid2">
       <section class="panel"><div class="panel-head"><h2>Gespart pro Monat</h2><div class="legend"><span><i style="background:var(--inc)"></i>Plan erreicht</span><span><i style="background:var(--warn)"></i>darunter</span><span><i style="background:var(--exp)"></i>Minus</span></div></div>
         <div class="chart">${goalChart(st)}</div>
-        <p class="small muted">Gespart = Einnahmen minus Ausgaben. Einzahlungen auf Sparkonto und Säule 3a zählen als gespart.</p></section>
+        <p class="small muted">Gespart = Einnahmen minus Ausgaben. Überträge aufs Sparkonto und Säule 3a zählen als gespart, Anlagen (E-Trading) ${opts.anlagen ? "ebenfalls" : "nicht"}.</p></section>
       <section class="panel"><h2>Diesen Monat</h2>
         <div class="calc">
           <div><span>Einnahmen${tm.incomeExpected ? " (erwartet, Durchschnitt)" : ""}</span><span class="num inc">${fmt(tm.income)}</span></div>
@@ -1052,6 +1058,8 @@ function renderSavings() {
       for (const i of plan.items) s.budgets[i.kategorie] = i.budget;
       save(); toast(`${plural(plan.items.length, "Budget", "Budgets")} übernommen.`); renderSavings();
     }
+  }, (e) => {
+    if (e.target.id === "g-anlagen") { s.anlagenImZiel = e.target.checked; save(); renderSavings(); }
   });
 }
 
@@ -1155,7 +1163,7 @@ function renderSettings() {
         <div class="set-grid">
           <div class="field"><label for="s-firma">Dein Name oder Firmenname</label><input type="text" id="s-firma" value="${esc(s.firma)}"><span class="hint">Hilft der KI zu erkennen, ob eine Rechnung von dir stammt (Einnahme).</span></div>
           <div class="field"><label for="s-ibans">Deine Geschäfts-IBAN(s)</label><textarea id="s-ibans" rows="2" placeholder="CH93 0076 2011 6238 5295 7">${esc((s.ibans || []).join("\n"))}</textarea><span class="hint">Eine pro Zeile. Steht sie auf einer QR-Rechnung, ist es deine Rechnung an einen Kunden.</span></div>
-          <div class="field"><label for="s-eigene">Deine Spar- und Anlagekonten</label><textarea id="s-eigene" rows="2" placeholder="Sparkonto CH12 0900 0000 1234 5678 9&#10;E-Trading CH34 0900 0000 9876 5432 1">${esc((s.eigeneKonten || []).join("\n"))}</textarea><span class="hint">IBAN oder Kontonummer von Sparkonto, E-Trading, 3a usw., eine pro Zeile. Überträge dorthin zählen als gespart, nicht als Ausgabe. Wörter wie „Übertrag“, „Sparkonto“ oder „E-Trading“ erkennt die App auch ohne Eintrag.</span></div>
+          <div class="field"><label for="s-eigene">Deine Spar- und Anlagekonten</label><textarea id="s-eigene" rows="2" placeholder="Sparkonto CH12 0900 0000 1234 5678 9&#10;E-Trading CH34 0900 0000 9876 5432 1">${esc((s.eigeneKonten || []).join("\n"))}</textarea><span class="hint">IBAN oder Kontonummer von Sparkonto, E-Trading, 3a usw., eine pro Zeile. Überträge aufs Sparkonto zählen als gespart; steht „E-Trading“ oder „Depot“ in der Zeile, gilt das Konto als Anlage. Wörter wie „Übertrag“, „Sparkonto“ oder „E-Trading“ erkennt die App auch ohne Eintrag.</span></div>
         </div>
       </section>
       <section class="panel"><h2>MWST</h2>

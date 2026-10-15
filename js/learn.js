@@ -31,7 +31,8 @@ export function merchantKey(text) {
 
 // [pattern, category, area, direction]
 const RULES = [
-  [/\b(sparkonto|sparplan|sparen|anlagekonto|wertschriften|depot|selma|true ?wealth|yuh|descartes|inyova)\b/i, "Sparen & Anlegen", "privat", "ausgabe"],
+  [/\b(e-?trading|trading|anlagekonto|wertschriften|depot|selma|true ?wealth|descartes|inyova|swissquote|interactive brokers)\b/i, "Anlagen (E-Trading)", "privat", "ausgabe"],
+  [/\b(sparkonto|sparplan|sparen|yuh)\b/i, "Sparkonto", "privat", "ausgabe"],
   [/\b(netflix|spotify|disney\+?|dazn|youtube premium|apple\.com\/bill|apple music|amazon prime|prime video|audible|teleboy|blue\s?tv|sky show)\b/i, "Abos & Streaming", "privat", "ausgabe"],
   [/\b(bargeldbezug|bargeld|postomat|bancomat|geldautomat|atm)\b/i, "Bargeld", "privat", "ausgabe"],
   [/\b(restaurant|ristorante|pizzeria|trattoria|caf[eé]|kaffee|bistro|bar|pub|kebab|sushi|mcdonald'?s?|burger king|starbucks|subway|kfc|take ?away|uber ?eats|just ?eat|eat\.ch|smood|dieci|tibits|hiltl|vapiano)\b/i, "Restaurant & Ausgang", "privat", "ausgabe"],
