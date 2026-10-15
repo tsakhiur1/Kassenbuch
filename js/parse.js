@@ -10,16 +10,18 @@ import { suggest } from "./learn.js";
 
 // Amounts need two decimals ("45.20", "1'234.50", "50.–") or Swiss thousands separators ("1'200"),
 // so that dates, years, percentages and phone numbers are not mistaken for amounts.
-const AMOUNT_RE = /(?<![\d.,'’])([-−])?((?:\d{1,3}(?:['’]\d{3})+|\d+)[.,](?:\d{2}|[-–]{1,2})|\d{1,3}(?:['’]\d{3})+)(?![.,]?\d)(-(?![\d]))?/g;
+// The leading group stands in for a lookbehind, which Safari before iOS 16.4 cannot parse.
+const AMOUNT_RE = /(^|[^\d.,'’])([-−])?((?:\d{1,3}(?:['’]\d{3})+|\d+)[.,](?:\d{2}|[-–]{1,2})|\d{1,3}(?:['’]\d{3})+)(?![.,]?\d)(-(?![\d]))?/g;
 
 export function findAmounts(s) {
+  s = String(s);
   const out = [];
-  for (const m of String(s).matchAll(AMOUNT_RE)) {
-    const after = s.slice(m.index + m[0].length, m.index + m[0].length + 3);
-    if (/^\s?%/.test(after)) continue;
-    const v = parseBetrag(m[2]);
+  for (const m of s.matchAll(AMOUNT_RE)) {
+    const end = m.index + m[0].length;
+    if (/^\s?%/.test(s.slice(end, end + 3))) continue;
+    const v = parseBetrag(m[3]);
     if (v == null || v === 0) continue;
-    out.push({ rappen: m[1] || m[3] ? -Math.abs(v) : v, index: m.index });
+    out.push({ rappen: m[2] || m[4] ? -Math.abs(v) : v, index: m.index + m[1].length });
   }
   return out;
 }
@@ -44,10 +46,12 @@ export function findDates(s) {
   s = String(s);
   const out = [];
   const add = (index, iso) => { if (iso) out.push({ index, iso }); };
-  for (const m of s.matchAll(/(?<!\d)(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?!\d)/g)) add(m.index, validDate(+m[3], +m[2], +m[1]));
-  for (const m of s.matchAll(/(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)/g)) add(m.index, validDate(+m[1], +m[2], +m[3]));
-  for (const m of s.matchAll(new RegExp(`(?<!\\d)(\\d{1,2})\\.?\\s+(${MONTH_RE})\\.?\\s+(\\d{4})`, "gi"))) add(m.index, validDate(+m[3], MONTH_NAMES[m[2].toLowerCase()], +m[1]));
-  for (const m of s.matchAll(/(?<!\d)(\d{1,2})\/(\d{1,2})\/(\d{4})(?!\d)/g)) add(m.index, validDate(+m[3], +m[2], +m[1]));
+  // (^|\D) instead of a lookbehind, for Safari before iOS 16.4; the index skips that character
+  const at = (m) => m.index + m[1].length;
+  for (const m of s.matchAll(/(^|\D)(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4}|\d{2})(?!\d)/g)) add(at(m), validDate(+m[4], +m[3], +m[2]));
+  for (const m of s.matchAll(/(^|\D)(\d{4})-(\d{2})-(\d{2})(?!\d)/g)) add(at(m), validDate(+m[2], +m[3], +m[4]));
+  for (const m of s.matchAll(new RegExp(`(^|\\D)(\\d{1,2})\\.?\\s+(${MONTH_RE})\\.?\\s+(\\d{4})`, "gi"))) add(at(m), validDate(+m[4], MONTH_NAMES[m[3].toLowerCase()], +m[2]));
+  for (const m of s.matchAll(/(^|\D)(\d{1,2})\/(\d{1,2})\/(\d{4})(?!\d)/g)) add(at(m), validDate(+m[4], +m[3], +m[2]));
   return out.sort((a, b) => a.index - b.index);
 }
 
