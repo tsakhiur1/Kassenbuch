@@ -985,20 +985,43 @@ function analysisHtml(an) {
       </div></section>`;
 }
 
+// The savings plan: every variable category (and every category that already has a budget) with
+// its average so far, the suggested budget and your own budget, editable right in the table.
+function planRows(plan, an) {
+  const set = state.data.settings.budgets || {};
+  const sug = new Map(plan.items.map((i) => [i.kategorie, i.budget]));
+  const avg = new Map(an.cats.map((c) => [c.kategorie, c.avg]));
+  const keys = [...new Set([...an.cats.filter((c) => !c.fix && c.avg > 0).map((c) => c.kategorie), ...Object.keys(set)])];
+  return keys.map((k) => ({ kategorie: k, avg: avg.get(k) || 0, vorschlag: sug.get(k), budget: set[k], fix: an.cats.find((c) => c.kategorie === k)?.fix }))
+    .sort((x, y) => y.avg - x.avg || x.kategorie.localeCompare(y.kategorie, "de"));
+}
+
 function planHtml(plan, st, an) {
   if (!an.n) return "";
-  const head = `<div class="panel-head"><h2>Dein Sparplan</h2><span class="muted small">Ziel: ${fmt0(st.needPerMonth || st.target)} pro Monat sparen</span></div>`;
-  if (!plan.gap) return `<section class="panel">${head}<p>Mit deinem bisherigen Durchschnitt von <b>${fmt0(an.savedAvg)}</b> pro Monat erreichst du das Ziel. Halte deine Ausgaben auf diesem Niveau. Budgets helfen dabei, dass es so bleibt.</p></section>`;
-  const set = state.data.settings.budgets || {};
-  const applied = plan.items.length && plan.items.every((i) => set[i.kategorie] === i.budget);
-  return `<section class="panel">${head}
-      <p>Bisher bleiben dir im Schnitt <b>${fmt0(an.savedAvg)}</b> im Monat. Für dein Ziel fehlen <b>${fmt0(plan.gap)}</b> pro Monat.${plan.items.length ? ` Vorschlag: jede variable Kategorie um <b>${Math.round(plan.share * 100)} %</b> senken. Fixkosten wie Miete und Krankenkasse bleiben unverändert.` : ""}</p>
-      ${plan.items.length ? `<div class="table-wrap"><table class="plan"><thead><tr><th>Kategorie</th><th class="r">Bisher</th><th class="r">Neues Budget</th><th class="r">Ersparnis</th></tr></thead><tbody>
-        ${plan.items.map((i) => `<tr><td>${esc(i.kategorie)}</td><td class="r num">${fmt0(i.avg)}</td><td class="r num"><b>${fmt0(i.budget)}</b></td><td class="r num inc">${fmt0(i.cut)}</td></tr>`).join("")}
-        <tr class="sum"><td>Total pro Monat</td><td class="r num">${fmt0(plan.items.reduce((a, i) => a + i.avg, 0))}</td><td class="r num"><b>${fmt0(plan.items.reduce((a, i) => a + i.budget, 0))}</b></td><td class="r num inc">${fmt0(plan.items.reduce((a, i) => a + i.cut, 0))}</td></tr>
+  const rate = st.started ? st.needPerMonth : st.target;
+  const rows = planRows(plan, an);
+  const withBudget = rows.filter((r) => r.budget != null);
+  const cut = withBudget.reduce((a, r) => a + Math.max(0, r.avg - r.budget), 0);
+  const open = Math.max(0, plan.gap - cut);
+  const sugMissing = plan.items.some((i) => (state.data.settings.budgets || {})[i.kategorie] !== i.budget);
+  const intro = plan.gap
+    ? `Bisher bleiben dir im Schnitt <b>${fmt0(an.savedAvg)}</b> im Monat. Für dein Ziel fehlen <b>${fmt0(plan.gap)}</b> pro Monat.${plan.items.length ? ` Der Vorschlag senkt jede variable Kategorie um ${Math.round(plan.share * 100)} %; du kannst jedes Budget selbst anpassen.` : ""}`
+    : `Mit deinem bisherigen Durchschnitt von <b>${fmt0(an.savedAvg)}</b> pro Monat erreichst du das Ziel. Budgets helfen, dass es so bleibt.`;
+  const status = !withBudget.length ? ""
+    : plan.gap ? (open ? `<div class="alert"><span>Mit deinen Budgets sparst du <strong>${fmt0(cut)}</strong> pro Monat. Für das Ziel fehlen noch <strong>${fmt0(open)}</strong> pro Monat${plan.rest && open >= plan.rest ? ": das geht nur über Fixkosten, mehr Einnahmen oder einen längeren Zeitraum" : ""}.</span></div>`
+      : `<p class="msg ok">Mit deinen Budgets sparst du ${fmt0(cut)} pro Monat. Das reicht für dein Ziel von ${fmt0(rate)} pro Monat.</p>`)
+    : `<p class="msg ok">Deine Budgets halten deine Ausgaben auf dem jetzigen Niveau.</p>`;
+  return `<section class="panel"><div class="panel-head"><h2>Dein Sparplan</h2><span class="muted small">Ziel: ${fmt0(rate)} pro Monat sparen</span></div>
+      <p>${intro}</p>
+      ${rows.length ? `<div class="table-wrap"><table class="plan"><thead><tr><th>Kategorie</th><th class="r">Bisher Ø</th><th class="r">Dein Budget / Monat</th><th class="r">Ersparnis</th></tr></thead><tbody>
+        ${rows.map((r, i) => `<tr><td><label for="p-b-${i}">${esc(r.kategorie)}</label>${r.fix ? ' <span class="chip neutral">fix</span>' : ""}${r.vorschlag != null ? `<small class="muted" style="display:block">Vorschlag ${fmt0(r.vorschlag)}</small>` : ""}</td>
+          <td class="r num">${r.avg ? fmt0(r.avg) : "–"}</td>
+          <td class="r"><input type="text" inputmode="decimal" class="plan-edit num" id="p-b-${i}" data-k="${esc(r.kategorie)}" value="${r.budget != null ? amountText(r.budget) : ""}" placeholder="${r.vorschlag != null ? amountText(r.vorschlag) : "kein Budget"}"></td>
+          <td class="r num ${r.budget != null && r.avg > r.budget ? "inc" : ""}">${r.budget != null && r.avg ? fmt0(r.avg - r.budget) : "–"}</td></tr>`).join("")}
+        <tr class="sum"><td>Total pro Monat</td><td class="r num">${fmt0(rows.reduce((a, r) => a + r.avg, 0))}</td><td class="r num"><b>${withBudget.length ? fmt0(withBudget.reduce((a, r) => a + r.budget, 0)) : "–"}</b></td><td class="r num inc">${withBudget.length ? fmt0(cut) : "–"}</td></tr>
       </tbody></table></div>` : ""}
-      ${plan.rest ? `<div class="alert"><span>Auch mit diesen Budgets bleiben <strong>${fmt0(plan.rest)} pro Monat</strong> offen. Das geht nur über die Fixkosten (Krankenkasse, Wohnung, Versicherungen, Abos), mehr Einnahmen oder ein längerer Zeitraum.</span></div>` : ""}
-      ${plan.items.length ? `<div class="actions">${applied ? `<span class="msg ok">Diese Budgets sind aktiv. Die Übersicht zeigt pro Kategorie, wie viel noch frei ist.</span>` : `<button class="btn" data-act="plan-apply">Budgets übernehmen</button><span class="small muted">Du kannst sie in den Einstellungen jederzeit anpassen.</span>`}</div>` : ""}
+      ${status}
+      <div class="actions">${plan.items.length && sugMissing ? `<button class="btn" data-act="plan-apply">${withBudget.length ? "Alle Vorschläge übernehmen" : "Vorschläge übernehmen"}</button>` : ""}<span class="small muted">Betrag eintippen und das Feld verlassen: Das Budget ist sofort gespeichert. Feld leeren entfernt das Budget.</span></div>
     </section>`;
 }
 
@@ -1079,6 +1102,14 @@ function renderSavings() {
     }
   }, (e) => {
     if (e.target.id === "g-anlagen") { s.anlagenImZiel = e.target.checked; save(); renderSavings(); }
+    else if (e.target.classList.contains("plan-edit")) {
+      const k = e.target.dataset.k, raw = e.target.value.trim(), v = parseBetrag(raw);
+      if (!raw) { if (s.budgets?.[k] != null) { delete s.budgets[k]; save(); toast(`Budget ${k} entfernt.`); } }
+      else if (!v || v <= 0) { toast("Bitte einen Betrag eingeben, z. B. 250."); }
+      else { s.budgets = { ...(s.budgets || {}), [k]: Math.abs(v) }; save(); toast(`Budget ${k}: ${fmt0(Math.abs(v))} pro Monat.`); }
+      const id = e.target.id; renderSavings();
+      $(id)?.closest("tr")?.nextElementSibling?.querySelector("input")?.focus();
+    }
   });
 }
 

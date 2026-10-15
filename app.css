@@ -299,3 +299,6 @@ table.plan tr.sum td { border-bottom: 0; font-weight: 600; }
 .budget-input { display: inline-flex; align-items: center; gap: 6px; }
 .budget-input input { width: 8.5em; text-align: right; font-family: var(--num); }
 @media (max-width: 520px) { .budget-row { grid-template-columns: minmax(0, 1fr) auto; } .budget-row label { grid-column: 1 / -1; } }
+table.plan input.plan-edit { width: 7.5em; text-align: right; padding: 6px 8px; }
+table.plan td { vertical-align: middle; }
+@media (max-width: 520px) { table.plan th:nth-child(4), table.plan td:nth-child(4) { display: none; } }
